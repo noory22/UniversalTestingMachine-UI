@@ -29,10 +29,14 @@ TIMEOUT = 1
 REG_X = 10   # R10 → distance (16-bit int)
 REG_Y = 14   # R14 → force (32-bit float: R14+R15)
 REG_Z = 5    # R5 → If 1 than Start->Enable If 0 than Start -> Disable 
+REG_WEIGHT = 102       # R16 → Weight range parameter
 COIL_START = 2003   # M3
 COIL_STOP = 2006    # M6
 COIL_RESET = 2004   # M4
 COIL_TEAR = 2007    # M7
+COIL_NORMAL = 2100    # M100 → Normal mode
+COIL_TARE_S = 2101    # M101 → Settings Tare mode (1-sec pulse)
+COIL_CALIBRATE = 2102 # M102 → Calibrate mode
 # -------------------------------
 
 # -------------------------------
@@ -206,6 +210,87 @@ class ModbusWorker(QThread):
             print(f"Error turning off Tear (M7): {str(e)}")
             return False
     
+    def turn_on_settings_normal(self):
+        """Turn on coil M100 (Settings Normal)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            self.error_occurred.emit("Not connected to Modbus device")
+            return False
+            
+        try:
+            self.modbus_client.write_coil(COIL_NORMAL, True)
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Error turning on Settings Normal (M100): {str(e)}")
+            return False
+
+    def turn_off_settings_normal(self):
+        """Turn off coil M100 (Settings Normal)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            return True
+            
+        try:
+            self.modbus_client.write_coil(COIL_NORMAL, False)
+            return True
+        except Exception as e:
+            print(f"Error turning off Settings Normal (M100): {str(e)}")
+            return False
+
+    def turn_on_settings_tare(self):
+        """Turn on coil M101 (Settings Tare)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            self.error_occurred.emit("Not connected to Modbus device")
+            return False
+            
+        try:
+            self.modbus_client.write_coil(COIL_TARE_S, True)
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Error turning on Settings Tare (M101): {str(e)}")
+            return False
+
+    def turn_off_settings_tare(self):
+        """Turn off coil M101 (Settings Tare)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            return True
+            
+        try:
+            self.modbus_client.write_coil(COIL_TARE_S, False)
+            return True
+        except Exception as e:
+            print(f"Error turning off Settings Tare (M101): {str(e)}")
+            return False
+    
+    def write_weight_register(self, value):
+        """Write weight range parameter to R102 register"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            self.error_occurred.emit("Not connected to Modbus device")
+            return False
+            
+        try:
+            self.modbus_client.write_register(REG_WEIGHT, int(value))
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Error writing weight register: {str(e)}")
+            return False
+
+    def write_mode_coil(self, mode):
+        """Write mode selection to M-bit coils (M100: Normal, M102: Calibrate)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            self.error_occurred.emit("Not connected to Modbus device")
+            return False
+            
+        try:
+            if mode == 'normal':
+                self.modbus_client.write_coil(COIL_NORMAL, True)
+                self.modbus_client.write_coil(COIL_CALIBRATE, False)
+            elif mode == 'calibrate':
+                self.modbus_client.write_coil(COIL_NORMAL, False)
+                self.modbus_client.write_coil(COIL_CALIBRATE, True)
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Error setting mode coil: {str(e)}")
+            return False
+
     def read_registers(self):
         """Read distance and force registers (from main.py)"""
         if not self.modbus_client or not self.modbus_client.connected:
@@ -326,6 +411,349 @@ def get_best_auto_detected_port():
     return None
 
 # -------------------------------
+# Settings Screen Class
+# -------------------------------
+class SettingsScreen(QtWidgets.QWidget):
+    def __init__(self, modbus_worker, parent=None):
+        super().__init__(parent)
+        self.setObjectName("screen_settings")
+        self.modbus_worker = modbus_worker
+        self.current_mode = "Normal"
+        
+        # Single shot timer for Normal (Coil M100) 1-second auto turn off
+        self.normal_timer = QTimer()
+        self.normal_timer.setSingleShot(True)
+        self.normal_timer.timeout.connect(self.auto_turn_off_normal)
+        
+        # Single shot timer for Tare (Coil M101) 1-second auto turn off
+        self.tare_timer = QTimer()
+        self.tare_timer.setSingleShot(True)
+        self.tare_timer.timeout.connect(self.auto_turn_off_tare)
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setStyleSheet("background-color: #F8FAFC;")
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+        
+        # Header Card
+        header_card = QFrame()
+        header_card.setStyleSheet("""
+            QFrame {
+                background-color: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
+            }
+        """)
+        header_layout = QVBoxLayout(header_card)
+        header_layout.setContentsMargins(24, 18, 24, 18)
+        header_layout.setSpacing(6)
+        
+        lbl_subtitle_top = QtWidgets.QLabel("⚙ CALIBRATION UTILITY")
+        lbl_subtitle_top.setStyleSheet("color: #3B82F6; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+        
+        lbl_title = QtWidgets.QLabel("Load Cell Calibration")
+        lbl_title.setStyleSheet("color: #0F172A; font-size: 24px; font-weight: bold;")
+        
+        lbl_desc = QtWidgets.QLabel("Configure load cell calibration inputs and monitor real-time force register telemetry.")
+        lbl_desc.setStyleSheet("color: #64748B; font-size: 13px;")
+        
+        header_layout.addWidget(lbl_subtitle_top)
+        header_layout.addWidget(lbl_title)
+        header_layout.addWidget(lbl_desc)
+        
+        main_layout.addWidget(header_card)
+        
+        # Cards Container (Horizontal Layout)
+        cards_layout = QtWidgets.QHBoxLayout()
+        cards_layout.setSpacing(15)
+        
+        # Card 1: Calibration Parameters
+        card_left = QFrame()
+        card_left.setStyleSheet("""
+            QFrame {
+                background-color: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
+            }
+        """)
+        left_layout = QVBoxLayout(card_left)
+        left_layout.setContentsMargins(24, 20, 24, 24)
+        left_layout.setSpacing(16)
+        
+        left_header = QtWidgets.QHBoxLayout()
+        icon_param = QtWidgets.QLabel("🎛")
+        icon_param.setStyleSheet("font-size: 18px; color: #3B82F6;")
+        lbl_param_title = QtWidgets.QLabel("Calibration Parameters")
+        lbl_param_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #0F172A;")
+        left_header.addWidget(icon_param)
+        left_header.addWidget(lbl_param_title)
+        left_header.addStretch()
+        left_layout.addLayout(left_header)
+        
+        divider1 = QFrame()
+        divider1.setFrameShape(QFrame.HLine)
+        divider1.setStyleSheet("color: #F1F5F9;")
+        left_layout.addWidget(divider1)
+        
+        lbl_weight_title = QtWidgets.QLabel("🔒 Weight Range (0-1000)")
+        lbl_weight_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #334155;")
+        left_layout.addWidget(lbl_weight_title)
+        
+        weight_input_layout = QtWidgets.QHBoxLayout()
+        self.spin_weight = QtWidgets.QSpinBox()
+        self.spin_weight.setRange(0, 1000)
+        self.spin_weight.setValue(100)
+        self.spin_weight.setFixedHeight(42)
+        self.spin_weight.setStyleSheet("""
+            QSpinBox {
+                border: 1px solid #CBD5E1;
+                border-radius: 8px;
+                padding: 0 12px;
+                font-size: 14px;
+                color: #0F172A;
+                background-color: #FFFFFF;
+            }
+            QSpinBox:focus {
+                border: 2px solid #3B82F6;
+            }
+        """)
+        
+        btn_send = QPushButton("Send")
+        btn_send.setFixedSize(85, 42)
+        btn_send.setCursor(QtCore.Qt.PointingHandCursor)
+        btn_send.setStyleSheet("""
+            QPushButton {
+                background-color: #6366F1;
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 8px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #4F46E5;
+            }
+            QPushButton:pressed {
+                background-color: #4338CA;
+            }
+        """)
+        btn_send.clicked.connect(self.on_send_weight)
+        
+        weight_input_layout.addWidget(self.spin_weight)
+        weight_input_layout.addWidget(btn_send)
+        left_layout.addLayout(weight_input_layout)
+        
+        left_layout.addSpacing(10)
+        
+        lbl_mode_title = QtWidgets.QLabel("🎛 Input Mode Selection")
+        lbl_mode_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #334155;")
+        left_layout.addWidget(lbl_mode_title)
+        
+        mode_btn_layout = QtWidgets.QHBoxLayout()
+        mode_btn_layout.setSpacing(10)
+        
+        self.btn_normal = QPushButton("Normal")
+        self.btn_tare = QPushButton("Tare")
+        self.btn_calib = QPushButton("Calibrate")
+        
+        for btn in (self.btn_normal, self.btn_tare, self.btn_calib):
+            btn.setFixedHeight(42)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+        
+        self.btn_normal.clicked.connect(self.activate_normal)
+        self.btn_tare.clicked.connect(self.activate_tare)
+        self.btn_calib.clicked.connect(lambda: self.set_input_mode("Calibrate"))
+        
+        mode_btn_layout.addWidget(self.btn_normal)
+        mode_btn_layout.addWidget(self.btn_tare)
+        mode_btn_layout.addWidget(self.btn_calib)
+        left_layout.addLayout(mode_btn_layout)
+        
+        status_layout = QtWidgets.QHBoxLayout()
+        lbl_curr_tag = QtWidgets.QLabel("Current:")
+        lbl_curr_tag.setStyleSheet("color: #64748B; font-size: 12px;")
+        
+        self.lbl_curr_val = QtWidgets.QLabel("Normal")
+        self.lbl_curr_val.setStyleSheet("""
+            background-color: #F1F5F9;
+            color: #0F172A;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #E2E8F0;
+        """)
+        status_layout.addWidget(lbl_curr_tag)
+        status_layout.addWidget(self.lbl_curr_val)
+        status_layout.addStretch()
+        
+        left_layout.addLayout(status_layout)
+        left_layout.addStretch()
+        
+        # Card 2: Live Calibration Reads
+        card_right = QFrame()
+        card_right.setStyleSheet("""
+            QFrame {
+                background-color: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
+            }
+        """)
+        right_layout = QVBoxLayout(card_right)
+        right_layout.setContentsMargins(24, 20, 24, 24)
+        right_layout.setSpacing(16)
+        
+        right_header = QtWidgets.QHBoxLayout()
+        icon_reads = QtWidgets.QLabel("📈")
+        icon_reads.setStyleSheet("font-size: 18px; color: #10B981;")
+        lbl_reads_title = QtWidgets.QLabel("Live Calibration Reads")
+        lbl_reads_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #0F172A;")
+        right_header.addWidget(icon_reads)
+        right_header.addWidget(lbl_reads_title)
+        right_header.addStretch()
+        right_layout.addLayout(right_header)
+        
+        divider2 = QFrame()
+        divider2.setFrameShape(QFrame.HLine)
+        divider2.setStyleSheet("color: #F1F5F9;")
+        right_layout.addWidget(divider2)
+        
+        self.card_metric1, self.lbl_val1 = self.create_metric_box("REAL-TIME FORCE", "--", "#10B981")
+        right_layout.addWidget(self.card_metric1)
+        
+        self.card_metric2, self.lbl_val2 = self.create_metric_box("RAW FORCE VALUE", "--", "#2563EB")
+        right_layout.addWidget(self.card_metric2)
+        
+        self.card_metric3, self.lbl_val3 = self.create_metric_box("PLC REAL-TIME VALUE", "--", "#D97706")
+        right_layout.addWidget(self.card_metric3)
+        
+        right_layout.addStretch()
+        
+        cards_layout.addWidget(card_left, 1)
+        cards_layout.addWidget(card_right, 1)
+        
+        main_layout.addLayout(cards_layout)
+        
+        self.update_mode_button_styles()
+
+    def create_metric_box(self, label_text, default_val, color_hex):
+        box = QFrame()
+        box.setFixedHeight(54)
+        box.setStyleSheet("""
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+            }
+        """)
+        box_layout = QtWidgets.QHBoxLayout(box)
+        box_layout.setContentsMargins(16, 0, 16, 0)
+        
+        lbl_tag = QtWidgets.QLabel(label_text)
+        lbl_tag.setStyleSheet("color: #64748B; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;")
+        
+        lbl_val = QtWidgets.QLabel(default_val)
+        lbl_val.setStyleSheet(f"color: {color_hex}; font-size: 18px; font-weight: bold;")
+        
+        box_layout.addWidget(lbl_tag)
+        box_layout.addStretch()
+        box_layout.addWidget(lbl_val)
+        
+        return box, lbl_val
+
+    def set_input_mode(self, mode):
+        self.current_mode = mode
+        self.lbl_curr_val.setText(mode)
+        self.update_mode_button_styles()
+        
+        if self.modbus_worker:
+            mode_lower = mode.lower()
+            success = self.modbus_worker.write_mode_coil(mode_lower)
+            if success:
+                print(f"✅ PLC Mode set to: {mode}")
+
+    def update_mode_button_styles(self):
+        active_style = """
+            QPushButton {
+                background-color: #EFF6FF;
+                border: 2px solid #3B82F6;
+                color: #2563EB;
+                font-size: 13px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
+        """
+        inactive_style = """
+            QPushButton {
+                background-color: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                color: #64748B;
+                font-size: 13px;
+                font-weight: 500;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #F8FAFC;
+                color: #334155;
+            }
+        """
+        self.btn_normal.setStyleSheet(active_style if self.current_mode == "Normal" else inactive_style)
+        self.btn_tare.setStyleSheet(active_style if self.current_mode == "Tare" else inactive_style)
+        self.btn_calib.setStyleSheet(active_style if self.current_mode == "Calibrate" else inactive_style)
+
+    def on_send_weight(self):
+        val = self.spin_weight.value()
+        if self.modbus_worker:
+            success = self.modbus_worker.write_weight_register(val)
+            if success:
+                self.lbl_val3.setText(f"{val}")
+                QMessageBox.information(self, "Success", f"Weight parameter {val} sent to register R16!")
+            else:
+                QMessageBox.warning(self, "Warning", "Not connected to PLC or error writing register.")
+        else:
+            self.lbl_val3.setText(f"{val}")
+
+    def activate_normal(self):
+        """Activate Settings Normal (Coil M100) for 1 second identical to Tare behavior"""
+        if self.modbus_worker:
+            if self.modbus_worker.turn_on_settings_normal():
+                print("✅ Settings: Normal (M100) turned ON - 1s Timer started")
+                self.normal_timer.start(1000)
+            else:
+                QMessageBox.warning(self, "Error", "Not connected to PLC or failed to turn on Normal (M100)!")
+
+    def auto_turn_off_normal(self):
+        """Automatically turn off Coil M100 after 1 second"""
+        if self.modbus_worker:
+            self.modbus_worker.turn_off_settings_normal()
+            print("⏹ Settings: Normal (M100) automatically turned OFF after 1 second")
+
+    def activate_tare(self):
+        """Activate Settings Tare (Coil M101) for 1 second identical to M7 behavior"""
+        if self.modbus_worker:
+            if self.modbus_worker.turn_on_settings_tare():
+                print("✅ Settings: Tare (M101) turned ON")
+                self.tare_timer.start(1000)
+            else:
+                QMessageBox.warning(self, "Error", "Not connected to PLC or failed to turn on Tare (M101)!")
+
+    def auto_turn_off_tare(self):
+        """Automatically turn off Coil M101 after 1 second"""
+        if self.modbus_worker:
+            self.modbus_worker.turn_off_settings_tare()
+            print("⏹ Settings: Tare (M101) automatically turned OFF after 1 second")
+
+    def update_telemetry(self, distance, force):
+        """Update live telemetry metrics when data is received"""
+        self.lbl_val1.setText(f"{force:.3f} mN")
+        self.lbl_val2.setText(f"{force:.3f}")
+
+
+# -------------------------------
 # Main Window Class
 # -------------------------------
 class MainWindow(QMainWindow):
@@ -371,8 +799,14 @@ class MainWindow(QMainWindow):
         # Initialize Modbus worker thread
         self.modbus_worker = ModbusWorker()
         
+        # Initialize Settings screen widget
+        self.screen_settings = SettingsScreen(self.modbus_worker, parent=self.centralwidget)
+        self.screen_settings.setGeometry(0, 69, 1031, 531)
+        self.screen_settings.hide()
+
         # Connect worker signals to slots
         self.modbus_worker.data_updated.connect(self.update_data_display)
+        self.modbus_worker.data_updated.connect(self.screen_settings.update_telemetry)
         self.modbus_worker.connection_status.connect(self.handle_connection_status)
         self.modbus_worker.error_occurred.connect(self.handle_error)
         self.modbus_worker.z_register_updated.connect(self.handle_z_register_update)
@@ -682,11 +1116,42 @@ class MainWindow(QMainWindow):
             print(f"Icon setup error: {e}")
 
     def connect_signals(self):
-        """Connect all button signals to their slots"""
-        # Navigation
+        # Navigation & Main Menu Layout Alignment
         self.button_A.clicked.connect(self.handle_back_pressed)
-        self.button_2.clicked.connect(lambda: self.handle_screen_change(5))  # Process Mode
-        self.button_17.clicked.connect(lambda: self.handle_screen_change(7))  # Process Logs
+        
+        # Fit container card and buttons cleanly inside label_50
+        if hasattr(self, 'label_50'):
+            self.label_50.setGeometry(60, 95, 380, 260)
+            self.label_50.raise_()
+
+        if hasattr(self, 'button_2'):
+            self.button_2.setGeometry(100, 120, 300, 55)
+            self.button_2.raise_()
+            self.button_2.clicked.connect(lambda: self.handle_screen_change(5))  # Process Mode
+
+        if hasattr(self, 'button_17'):
+            self.button_17.setGeometry(100, 195, 300, 55)
+            self.button_17.raise_()
+            self.button_17.clicked.connect(lambda: self.handle_screen_change(7))  # Process Logs
+
+        # Settings Button on Main Menu (screen_2)
+        self.button_settings = QPushButton("Settings", self.screen_2)
+        self.button_settings.setGeometry(100, 270, 300, 55)
+        self.button_settings.setFont(QtGui.QFont("SF Pro Display", 16, QtGui.QFont.Bold))
+        self.button_settings.setStyleSheet("""
+            QPushButton {
+                color: #FFFFFF;
+                background-color: #00509E;
+                border-radius: 5px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #003F7F;
+            }
+        """)
+        self.button_settings.clicked.connect(lambda: self.handle_screen_change(9))
+        self.button_settings.raise_()
+        self.button_settings.show()
         
         # Process Mode screen
         self.button_7.clicked.connect(self.start_process)   # Start
@@ -1389,10 +1854,10 @@ class MainWindow(QMainWindow):
     def handle_screen_change(self, screen_number):
         """Switch between screens"""
         # Hide all screens except screen_1 (login) which we've removed
-        screens = [self.screen_2, self.screen_5, self.screen_7]
+        screens = [self.screen_2, self.screen_5, self.screen_7, self.screen_settings]
         for screen in screens:
             if hasattr(self, screen.objectName()):
-                screen.hide()
+                getattr(self, screen.objectName()).hide()
         
         # Show selected screen
         if screen_number == 2:  # Main Menu
@@ -1437,6 +1902,10 @@ class MainWindow(QMainWindow):
             # Update the graph on Screen 7 if CSV data is already loaded
             if len(self.csv_distance) > 0:
                 self.plot_csv_data()
+                
+        elif screen_number == 9:  # Settings Screen
+            self.screen_settings.show()
+            self.label_A.setText("Settings")
 
     def update_start_button_state(self):
         """Update Start button state based on REG_Z value and current process state"""
@@ -1817,6 +2286,8 @@ class MainWindow(QMainWindow):
             current_screen = 5
         elif self.screen_7.isVisible():
             current_screen = 7
+        elif self.screen_settings.isVisible():
+            current_screen = 9
         
         # Navigate back with proper process handling
         if current_screen == 5:
@@ -1839,7 +2310,7 @@ class MainWindow(QMainWindow):
                 self.stop_csv_logging()
             
             self.handle_screen_change(2)
-        elif current_screen == 7:
+        elif current_screen == 7 or current_screen == 9:
             self.handle_screen_change(2)
         else:
             # If on main menu (screen 2), show a message or close the application
