@@ -28,6 +28,8 @@ BAUDRATE = 9600
 TIMEOUT = 1
 REG_X = 10   # R10 → distance (16-bit int)
 REG_Y = 14   # R14 → force (32-bit float: R14+R15)
+REG_F= 100   # R100 → Force in grams (setttings screen)
+REG_G= 101   # R101 → Real-time Plc Value (setttings screen)
 REG_Z = 5    # R5 → If 1 than Start->Enable If 0 than Start -> Disable 
 REG_WEIGHT = 102       # R16 → Weight range parameter
 COIL_START = 2003   # M3
@@ -48,6 +50,7 @@ class ModbusWorker(QThread):
     connection_status = pyqtSignal(bool, str)  # (connected, message)
     error_occurred = pyqtSignal(str)  # error message
     z_register_updated = pyqtSignal(int)  # New signal for REG_Z value
+    settings_data_updated = pyqtSignal(float, int, int)  # (force_r14, r100_grams, r101_raw)
     
     def __init__(self):
         super().__init__()
@@ -327,6 +330,29 @@ class ModbusWorker(QThread):
         except Exception as e:
             print(f"Read error: {e}")
             return None, None
+
+    def read_settings_registers(self):
+        """Read settings registers: R100 (REG_F) and R101 (REG_G)"""
+        if not self.modbus_client or not self.modbus_client.connected:
+            return None, None
+            
+        try:
+            # Read 2 registers starting from REG_F (R100)
+            resp = self.modbus_client.read_holding_registers(REG_F, count=2)
+            if resp is None or resp.isError() or not resp.registers or len(resp.registers) < 2:
+                return None, None
+                
+            r100 = resp.registers[0]
+            r101 = resp.registers[1]
+            
+            # Convert to signed 16-bit integers
+            r100_signed = r100 - 65536 if r100 > 32767 else r100
+            r101_signed = r101 - 65536 if r101 > 32767 else r101
+            
+            return r100_signed, r101_signed
+        except Exception as e:
+            print(f"Read settings registers error: {e}")
+            return None, None
     
     def run(self):
         """Main thread loop for continuous reading"""
@@ -340,11 +366,15 @@ class ModbusWorker(QThread):
                     self.z_register_value = z_value
                     self.z_register_updated.emit(z_value)
                 
-                # Read distance and force only when process is active
-                if self.process_active:
-                    distance, force = self.read_registers()
-                    if distance is not None and force is not None:
-                        self.data_updated.emit(distance, force)
+                # Read distance and force continuously
+                distance, force = self.read_registers()
+                if distance is not None and force is not None:
+                    self.data_updated.emit(distance, force)
+                    
+                    # Read settings registers
+                    r100, r101 = self.read_settings_registers()
+                    if r100 is not None and r101 is not None:
+                        self.settings_data_updated.emit(force, r100, r101)
             
             # Sleep for update interval (500ms from main.py)
             self.msleep(self.update_interval)
@@ -710,12 +740,9 @@ class SettingsScreen(QtWidgets.QWidget):
         if self.modbus_worker:
             success = self.modbus_worker.write_weight_register(val)
             if success:
-                self.lbl_val3.setText(f"{val}")
                 QMessageBox.information(self, "Success", f"Weight parameter {val} sent to register R16!")
             else:
                 QMessageBox.warning(self, "Warning", "Not connected to PLC or error writing register.")
-        else:
-            self.lbl_val3.setText(f"{val}")
 
     def activate_normal(self):
         """Activate Settings Normal (Coil M100) for 1 second identical to Tare behavior"""
@@ -749,8 +776,19 @@ class SettingsScreen(QtWidgets.QWidget):
 
     def update_telemetry(self, distance, force):
         """Update live telemetry metrics when data is received"""
+        if not self.isVisible():
+            return
         self.lbl_val1.setText(f"{force:.3f} mN")
         self.lbl_val2.setText(f"{force:.3f}")
+        self.lbl_val3.setText(f"{force:.3f}")
+
+    def update_settings_telemetry(self, force, r100, r101):
+        """Update live telemetry metrics on settings screen with separate registers"""
+        if not self.isVisible():
+            return
+        self.lbl_val1.setText(f"{force:.3f} mN")
+        self.lbl_val2.setText(f"{r101}")
+        self.lbl_val3.setText(f"{r100} g")
 
 
 # -------------------------------
@@ -806,7 +844,7 @@ class MainWindow(QMainWindow):
 
         # Connect worker signals to slots
         self.modbus_worker.data_updated.connect(self.update_data_display)
-        self.modbus_worker.data_updated.connect(self.screen_settings.update_telemetry)
+        self.modbus_worker.settings_data_updated.connect(self.screen_settings.update_settings_telemetry)
         self.modbus_worker.connection_status.connect(self.handle_connection_status)
         self.modbus_worker.error_occurred.connect(self.handle_error)
         self.modbus_worker.z_register_updated.connect(self.handle_z_register_update)
