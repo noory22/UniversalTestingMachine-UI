@@ -50,7 +50,7 @@ class ModbusWorker(QThread):
     connection_status = pyqtSignal(bool, str)  # (connected, message)
     error_occurred = pyqtSignal(str)  # error message
     z_register_updated = pyqtSignal(int)  # New signal for REG_Z value
-    settings_data_updated = pyqtSignal(float, int, int)  # (force_r14, r100_grams, r101_raw)
+    settings_data_updated = pyqtSignal(int, int)  # (r100_grams, r101_raw) - Decoupled from force_r14
     
     def __init__(self):
         super().__init__()
@@ -374,7 +374,7 @@ class ModbusWorker(QThread):
                     # Read settings registers
                     r100, r101 = self.read_settings_registers()
                     if r100 is not None and r101 is not None:
-                        self.settings_data_updated.emit(force, r100, r101)
+                        self.settings_data_updated.emit(r100, r101)
             
             # Sleep for update interval (500ms from main.py)
             self.msleep(self.update_interval)
@@ -746,6 +746,10 @@ class SettingsScreen(QtWidgets.QWidget):
 
     def activate_normal(self):
         """Activate Settings Normal (Coil M100) for 1 second identical to Tare behavior"""
+        self.current_mode = "Normal"
+        self.lbl_curr_val.setText("Normal")
+        self.update_mode_button_styles()
+        
         if self.modbus_worker:
             if self.modbus_worker.turn_on_settings_normal():
                 print("✅ Settings: Normal (M100) turned ON - 1s Timer started")
@@ -761,6 +765,10 @@ class SettingsScreen(QtWidgets.QWidget):
 
     def activate_tare(self):
         """Activate Settings Tare (Coil M101) for 1 second identical to M7 behavior"""
+        self.current_mode = "Tare"
+        self.lbl_curr_val.setText("Tare")
+        self.update_mode_button_styles()
+        
         if self.modbus_worker:
             if self.modbus_worker.turn_on_settings_tare():
                 print("✅ Settings: Tare (M101) turned ON")
@@ -775,18 +783,15 @@ class SettingsScreen(QtWidgets.QWidget):
             print("⏹ Settings: Tare (M101) automatically turned OFF after 1 second")
 
     def update_telemetry(self, distance, force):
-        """Update live telemetry metrics when data is received"""
+        """Update live force telemetry from R14 - independent of R100/R101"""
         if not self.isVisible():
             return
         self.lbl_val1.setText(f"{force:.3f} mN")
-        self.lbl_val2.setText(f"{force:.3f}")
-        self.lbl_val3.setText(f"{force:.3f}")
 
-    def update_settings_telemetry(self, force, r100, r101):
-        """Update live telemetry metrics on settings screen with separate registers"""
+    def update_settings_telemetry(self, r100, r101):
+        """Update R100/R101 telemetry on settings screen - independent of R14"""
         if not self.isVisible():
             return
-        self.lbl_val1.setText(f"{force:.3f} mN")
         self.lbl_val2.setText(f"{r101}")
         self.lbl_val3.setText(f"{r100} g")
 
@@ -844,6 +849,7 @@ class MainWindow(QMainWindow):
 
         # Connect worker signals to slots
         self.modbus_worker.data_updated.connect(self.update_data_display)
+        self.modbus_worker.data_updated.connect(self.screen_settings.update_telemetry)
         self.modbus_worker.settings_data_updated.connect(self.screen_settings.update_settings_telemetry)
         self.modbus_worker.connection_status.connect(self.handle_connection_status)
         self.modbus_worker.error_occurred.connect(self.handle_error)
@@ -2164,12 +2170,13 @@ class MainWindow(QMainWindow):
     def update_data_display(self, distance, force):
         """Update UI with new data from Modbus"""
         try:
-            # Only update if process is running (not when Tear is active)
-            if self.process_running and not self.tear_active:
-                # Update labels (force with 3 decimal places)
+            # Always update labels when connected and not taring
+            if not self.tear_active:
                 self.label_57.setText(str(distance))
                 self.label_41.setText(f"{force:.3f}")
-                
+
+            # Only log data and update graph if process is running
+            if self.process_running and not self.tear_active:
                 # Store data for logging
                 self.data_log.append((distance, force, datetime.now()))
                 
@@ -2187,9 +2194,6 @@ class MainWindow(QMainWindow):
                 
                 # Update graph on Screen 5 only
                 self.update_graph_screen5()
-                
-                # Print latest values (from main.py)
-                # print(f"Distance (R10): {distance}, Force (R14): {force:.5f}")
         except Exception as e:
             print(f"Error in update_data_display: {e}")
 
