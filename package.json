@@ -1,0 +1,45 @@
+{
+  "name": "utm-ui",
+  "version": "1.0.0",
+  "description": "Universal Testing Machine UI - React + Tailwind CSS + Electron",
+  "main": ".vite/build/main.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "dev": "node dev.js",
+    "test": "node test/runner.js"
+  },
+  "keywords": [
+    "utm",
+    "testing-machine",
+    "electron",
+    "react",
+    "modbus"
+  ],
+  "author": "UTM Development Team",
+  "license": "ISC",
+  "dependencies": {
+    "chart.js": "^4.4.7",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.473.0",
+    "modbus-serial": "^8.0.16",
+    "react": "^18.3.1",
+    "react-chartjs-2": "^5.3.0",
+    "react-dom": "^18.3.1",
+    "serialport": "^12.0.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.7.0",
+    "@electron-forge/maker-squirrel": "^7.7.0",
+    "@electron-forge/maker-zip": "^7.7.0",
+    "@electron-forge/plugin-vite": "^7.7.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.11"
+  }
+}
