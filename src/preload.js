@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('api', {
   deleteCsvLog: (filename) => ipcRenderer.invoke('logs:delete', filename),
   deleteLogFile: (filename) => ipcRenderer.invoke('logs:delete', filename),
   deleteAllCsvLogs: () => ipcRenderer.invoke('logs:delete-all'),
+  downloadLogFile: (filename) => ipcRenderer.invoke('logs:download', filename),
+  downloadLog: (filename) => ipcRenderer.invoke('logs:download', filename),
+  exportCsvLog: (filename) => ipcRenderer.invoke('logs:download', filename),
 
   // Event Subscriptions
   onTelemetry: (callback) => {

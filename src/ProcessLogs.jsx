@@ -29,6 +29,7 @@ import {
   AlertCircle,
   X,
   CheckCircle,
+  Download,
 } from 'lucide-react';
 
 ChartJS.register(
@@ -124,7 +125,24 @@ export default function ProcessLogs() {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3000);
+    setTimeout(() => setToastMessage(''), 3500);
+  };
+
+  const handleDownloadSelected = async () => {
+    if (!selectedFile) return;
+    try {
+      if (window.api && window.api.downloadLogFile) {
+        const res = await window.api.downloadLogFile(selectedFile);
+        if (res && res.success) {
+          showToast(`File saved: ${res.savePath}`);
+        } else if (res && !res.canceled) {
+          showToast(res.message || 'Download failed');
+        }
+      }
+    } catch (e) {
+      console.error('Download error:', e);
+      showToast('Error downloading log file');
+    }
   };
 
   const handleDeleteSelected = async () => {
@@ -382,24 +400,35 @@ export default function ProcessLogs() {
               </div>
             )}
 
-            {/* Delete Buttons */}
-            <div className="flex items-center gap-2 mt-4 pt-4 border-t border-gray-100">
+            {/* Action Buttons */}
+            <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-gray-100">
               <button
-                onClick={() => setDeleteConfirm('single')}
+                onClick={handleDownloadSelected}
                 disabled={!selectedFile}
-                className="flex-1 py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                className="w-full py-2.5 px-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-xs hover:shadow-md"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete</span>
+                <Download className="w-3.5 h-3.5" />
+                <span>Download / Export CSV</span>
               </button>
 
-              <button
-                onClick={() => setDeleteConfirm('all')}
-                disabled={logFiles.length === 0}
-                className="py-2.5 px-3 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 border border-gray-200 rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
-              >
-                Delete All
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setDeleteConfirm('single')}
+                  disabled={!selectedFile}
+                  className="flex-1 py-2 px-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete</span>
+                </button>
+
+                <button
+                  onClick={() => setDeleteConfirm('all')}
+                  disabled={logFiles.length === 0}
+                  className="py-2 px-3 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 border border-gray-200 rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  Delete All
+                </button>
+              </div>
             </div>
           </div>
 

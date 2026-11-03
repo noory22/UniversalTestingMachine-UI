@@ -13,8 +13,8 @@ let mainWindow = null;
 let modbusClient = null;
 let currentPort = null;
 let isConnected = false;
-let pollingTimer = null;
-let isPolling = false;
+let isLoopRunning = false;
+let consecutiveErrors = 0;
 
 let regZValue = 0;
 let processRunning = false;
@@ -23,10 +23,72 @@ let tearTimer = null;
 let normalTimer = null;
 let tareTimer = null;
 
-// CSV logging state
-const logsDir = path.join(app.isPackaged ? path.dirname(process.execPath) : process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
+// Cache of last good reads
+let lastDistance = 0;
+let lastForce = 0.0;
+let lastR100 = 0;
+let lastR101 = 0;
+
+// Synchronized Command Queue (Eliminates half-duplex serial collisions)
+const commandQueue = [];
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function safeExecute(commandName, action) {
+  return new Promise((resolve, reject) => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return resolve({ success: false, message: 'Not connected to PLC' });
+    }
+    commandQueue.push({
+      commandName,
+      task: async () => {
+        try {
+          const res = await action();
+          return { success: true, ...res };
+        } catch (err) {
+          throw err;
+        }
+      },
+      resolve,
+      reject,
+    });
+  });
+}
+
+// =========================================================================
+// CSV Logging State - Stored in User Documents/UTM Logs (matching CTTM-VD & FTM-Web)
+// =========================================================================
+let logsDir = '';
+
+function initLogsDirectory() {
+  try {
+    logsDir = path.join(app.getPath('documents'), 'UTM Logs');
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+      console.log(`📁 Created UTM Logs folder at: ${logsDir}`);
+    }
+
+    // Auto-migrate any legacy logs from the project folder
+    const legacyLogsDir = path.join(process.cwd(), 'logs');
+    if (fs.existsSync(legacyLogsDir) && legacyLogsDir !== logsDir) {
+      const files = fs.readdirSync(legacyLogsDir).filter((f) => f.endsWith('.csv'));
+      for (const file of files) {
+        const src = path.join(legacyLogsDir, file);
+        const dest = path.join(logsDir, file);
+        if (!fs.existsSync(dest)) {
+          fs.copyFileSync(src, dest);
+          console.log(`📋 Migrated log to Documents/UTM Logs: ${file}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error initializing UTM Logs directory:', err);
+    // Fallback to local logs if documents folder fails
+    logsDir = path.join(process.cwd(), 'logs');
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+  }
 }
 
 let activeCsvPath = null;
@@ -80,16 +142,47 @@ function formatTimestamp(d = new Date()) {
   return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}.${ms}`;
 }
 
-// Start polling loop
-function startPolling() {
-  if (pollingTimer) clearInterval(pollingTimer);
-  
-  pollingTimer = setInterval(async () => {
-    if (!isConnected || !modbusClient || isPolling) return;
-    
-    isPolling = true;
+// =========================================================================
+// Single Continuous Modbus Coordinator Loop (Matching Python Architecture)
+// =========================================================================
+async function processModbusLoop() {
+  if (isLoopRunning) return;
+  isLoopRunning = true;
+
+  while (true) {
+    // 0. Check unexpected port closure
+    if (isConnected && (!modbusClient || !modbusClient.isOpen)) {
+      console.warn('⚠️ Port closed unexpectedly.');
+      isConnected = false;
+      consecutiveErrors = 0;
+      sendConnectionStatus(false, 'Disconnected');
+    }
+
+    // 1. Idle wait if disconnected
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      await delay(500);
+      continue;
+    }
+
     try {
-      // 1. Read REG_Z (R5)
+      // 2. Process High Priority Commands FIRST (Writes, Modes, Start/Stop/Reset/Tare)
+      if (commandQueue.length > 0) {
+        const cmd = commandQueue.shift();
+        try {
+          const result = await cmd.task();
+          cmd.resolve(result);
+        } catch (e) {
+          console.error(`❌ Command ${cmd.commandName} failed:`, e.message);
+          cmd.reject(e);
+        }
+        await delay(30); // 30ms inter-frame silence
+        continue;
+      }
+
+      // 3. Telemetry Read Cycle (Sequential, matching Python main.py)
+      let cycleSuccess = false;
+
+      // 3a. Read REG_Z (R5)
       try {
         const respZ = await modbusClient.readHoldingRegisters(5, 1);
         if (respZ && respZ.data && respZ.data.length > 0) {
@@ -98,22 +191,29 @@ function startPolling() {
             regZValue = newZ;
             sendProcessState();
           }
+          cycleSuccess = true;
         }
       } catch (e) {
-        // Continue to other reads
+        // Individual catch prevents timeout cascade
       }
 
-      // 2. Read Distance REG_X (R10)
-      let distance = 0;
+      await delay(20); // 20ms inter-frame gap
+
+      // 3b. Read Distance REG_X (R10)
+      let distance = lastDistance;
       try {
         const respX = await modbusClient.readHoldingRegisters(10, 1);
         if (respX && respX.data && respX.data.length > 0) {
           distance = respX.data[0];
+          lastDistance = distance;
+          cycleSuccess = true;
         }
       } catch (e) {}
 
-      // 3. Read Force REG_Y (R14 + R15) - 32-bit float LE
-      let force = 0.0;
+      await delay(20);
+
+      // 3c. Read Force REG_Y (R14 + R15) - 32-bit float LE
+      let force = lastForce;
       try {
         const respY = await modbusClient.readHoldingRegisters(14, 2);
         if (respY && respY.data && respY.data.length >= 2) {
@@ -122,14 +222,20 @@ function startPolling() {
           const buf = Buffer.alloc(4);
           buf.writeUInt16LE(r14, 0);
           buf.writeUInt16LE(r15, 2);
-          force = buf.readFloatLE(0);
-          if (isNaN(force)) force = 0.0;
+          const f = buf.readFloatLE(0);
+          if (!isNaN(f)) {
+            force = f;
+            lastForce = force;
+            cycleSuccess = true;
+          }
         }
       } catch (e) {}
 
-      // 4. Read Settings Registers: R100 (REG_F) & R101 (REG_G)
-      let r100 = 0;
-      let r101 = 0;
+      await delay(20);
+
+      // 3d. Read Settings Registers: R100 (REG_F) & R101 (REG_G)
+      let r100 = lastR100;
+      let r101 = lastR101;
       try {
         const respSettings = await modbusClient.readHoldingRegisters(100, 2);
         if (respSettings && respSettings.data && respSettings.data.length >= 2) {
@@ -137,10 +243,26 @@ function startPolling() {
           let raw101 = respSettings.data[1];
           r100 = raw100 > 32767 ? raw100 - 65536 : raw100;
           r101 = raw101 > 32767 ? raw101 - 65536 : raw101;
+          lastR100 = r100;
+          lastR101 = r101;
+          cycleSuccess = true;
         }
       } catch (e) {}
 
-      // Send telemetry
+      // Connection health check
+      if (cycleSuccess) {
+        consecutiveErrors = 0;
+      } else {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 6) {
+          console.warn('⚠️ 6 consecutive Modbus read cycles failed. Disconnecting...');
+          await disconnectModbus();
+          consecutiveErrors = 0;
+          continue;
+        }
+      }
+
+      // Broadcast telemetry to UI
       sendTelemetry({
         distance,
         force,
@@ -151,7 +273,7 @@ function startPolling() {
         tearActive,
       });
 
-      // If test process is running and tear is not active, record CSV row
+      // Record CSV row if process is active and tare is not running
       if (processRunning && !tearActive && activeCsvStream) {
         const ts = formatTimestamp();
         const forceN = (force / 1000.0).toFixed(6);
@@ -160,25 +282,20 @@ function startPolling() {
         forceAccumulator.push(force);
       }
     } catch (err) {
-      console.error('Polling error:', err);
-    } finally {
-      isPolling = false;
+      console.error('Modbus coordinator error:', err.message);
+      await delay(200);
+      continue;
     }
-  }, 500); // 500ms update interval as in UTM Python
-}
 
-function stopPolling() {
-  if (pollingTimer) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
+    // 500ms cycle interval matching Python update_interval = 500
+    await delay(500);
   }
-  isPolling = false;
 }
 
 // Disconnect helper
 async function disconnectModbus() {
-  stopPolling();
-  
+  commandQueue.length = 0;
+
   if (tearTimer) {
     clearTimeout(tearTimer);
     tearTimer = null;
@@ -209,6 +326,7 @@ async function disconnectModbus() {
 
   isConnected = false;
   currentPort = null;
+  consecutiveErrors = 0;
   sendConnectionStatus(false, 'Disconnected');
 }
 
@@ -220,28 +338,44 @@ async function connectPortInternal(portName) {
 
   try {
     modbusClient = new ModbusRTU();
-    modbusClient.setTimeout(1000);
+    modbusClient.setTimeout(1000); // 1000ms timeout matching Python TIMEOUT = 1
+
+    modbusClient.on('error', (err) => {
+      console.warn('⚠️ Modbus background client warning:', err?.message || err);
+    });
 
     await modbusClient.connectRTUBuffered(portName, {
       baudRate: 9600,
       dataBits: 8,
-      parity: 'even',
+      parity: 'even', // Even parity matching Python parity='E'
       stopBits: 1,
     });
 
     modbusClient.setID(1);
+
+    // Initial read to verify device communication before reporting connected
+    try {
+      const resp = await modbusClient.readHoldingRegisters(5, 1);
+      if (resp && resp.data && resp.data.length > 0) {
+        regZValue = resp.data[0];
+      }
+    } catch (e) {
+      console.warn('Initial register check warning:', e.message);
+    }
+
     isConnected = true;
     currentPort = portName;
+    consecutiveErrors = 0;
 
     sendConnectionStatus(true, `Connected to ${portName}`);
-    startPolling();
+    processModbusLoop(); // Ensure polling loop is active
 
     return { success: true, message: `Connected to ${portName}` };
   } catch (err) {
     isConnected = false;
     currentPort = null;
     if (modbusClient) {
-      try { modbusClient.close(); } catch (e) {}
+      try { await modbusClient.close(); } catch (e) {}
       modbusClient = null;
     }
     sendConnectionStatus(false, `Failed to connect: ${err.message}`);
@@ -273,6 +407,8 @@ async function autoConnectPort() {
 // CSV test logging helpers
 function startProcessLogging() {
   try {
+    if (!logsDir) initLogsDirectory();
+
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const filename = `process_data_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`;
@@ -351,8 +487,10 @@ function createWindow() {
 
 // App lifecycle
 app.whenReady().then(() => {
+  initLogsDirectory();
   setupIpcHandlers();
   createWindow();
+  processModbusLoop(); // Start coordinator loop
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -431,185 +569,196 @@ function setupIpcHandlers() {
     };
   });
 
-  // 6. Start Process (M3 = 2003)
+  // 6. Start Process (M3 = 2003) - Queued & Sequential
   ipcMain.handle('utm:start-process', async () => {
-    if (!isConnected || !modbusClient) {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
     }
     if (regZValue !== 1) {
       return { success: false, message: 'Cannot start process: REG_Z is not 1!' };
     }
 
-    try {
-      const logResult = startProcessLogging();
-      if (!logResult.success) {
-        return { success: false, message: logResult.error };
-      }
+    const logResult = startProcessLogging();
+    if (!logResult.success) {
+      return { success: false, message: logResult.error };
+    }
 
-      await modbusClient.writeCoil(2003, true);
-      await modbusClient.writeCoil(2004, false);
-      await modbusClient.writeCoil(2006, false);
-      await modbusClient.writeCoil(2007, false);
+    return await safeExecute('start-process', async () => {
+      // Sequential coil writes with 25ms inter-frame gap matching Python main.py
+      await modbusClient.writeCoil(2003, true);   // COIL_START (M3)
+      await delay(25);
+      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await delay(25);
+      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await delay(25);
+      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await delay(25);
 
       processRunning = true;
       tearActive = false;
       sendProcessState();
 
-      return { success: true, filename: logResult.filename };
-    } catch (err) {
-      await stopProcessLogging();
-      sendError(`Error starting process: ${err.message}`);
-      return { success: false, message: err.message };
-    }
+      return { filename: logResult.filename };
+    });
   });
 
-  // 7. Stop Process (M6 = 2006)
+  // 7. Stop Process (M6 = 2006) - Queued & Sequential
   ipcMain.handle('utm:stop-process', async () => {
-    if (!isConnected || !modbusClient) {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       processRunning = false;
       await stopProcessLogging();
       sendProcessState();
       return { success: true };
     }
 
-    try {
-      await modbusClient.writeCoil(2006, true);
-      await modbusClient.writeCoil(2003, false);
-      await modbusClient.writeCoil(2004, false);
-      await modbusClient.writeCoil(2007, false);
+    return await safeExecute('stop-process', async () => {
+      await modbusClient.writeCoil(2006, true);   // COIL_STOP (M6)
+      await delay(25);
+      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await delay(25);
+      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await delay(25);
+      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await delay(25);
 
       processRunning = false;
       await stopProcessLogging();
       sendProcessState();
 
-      return { success: true };
-    } catch (err) {
-      processRunning = false;
-      await stopProcessLogging();
-      sendProcessState();
-      sendError(`Error stopping process: ${err.message}`);
-      return { success: false, message: err.message };
-    }
+      return {};
+    });
   });
 
-  // 8. Reset Process (M4 = 2004)
+  // 8. Reset Process (M4 = 2004) - Queued & Sequential
   ipcMain.handle('utm:reset-process', async () => {
     if (processRunning) {
       processRunning = false;
       await stopProcessLogging();
     }
 
-    if (!isConnected || !modbusClient) {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       sendProcessState();
       return { success: true };
     }
 
-    try {
-      await modbusClient.writeCoil(2004, true);
-      await modbusClient.writeCoil(2006, false);
-      await modbusClient.writeCoil(2003, false);
-      await modbusClient.writeCoil(2007, false);
+    return await safeExecute('reset-process', async () => {
+      await modbusClient.writeCoil(2004, true);   // COIL_RESET (M4)
+      await delay(25);
+      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await delay(25);
+      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await delay(25);
+      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await delay(25);
 
       sendProcessState();
-      return { success: true };
-    } catch (err) {
-      sendError(`Error resetting process: ${err.message}`);
-      return { success: false, message: err.message };
-    }
+      return {};
+    });
   });
 
-  // 9. Tare (M7 = 2007) - 1 second timed pulse
+  // 9. Tare (M7 = 2007) - 1 second timed pulse, Queued
   ipcMain.handle('utm:activate-tare', async () => {
-    if (!isConnected || !modbusClient) {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
     }
     if (tearActive) {
       return { success: false, message: 'Tare is already active' };
     }
 
-    try {
-      await modbusClient.writeCoil(2007, true);
+    return await safeExecute('activate-tare', async () => {
+      await modbusClient.writeCoil(2007, true);   // COIL_TEAR (M7)
+      await delay(25);
+      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await delay(25);
+      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await delay(25);
+      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await delay(25);
+
       tearActive = true;
+      processRunning = false;
       sendProcessState();
 
       if (tearTimer) clearTimeout(tearTimer);
       tearTimer = setTimeout(async () => {
-        try {
-          if (modbusClient && isConnected) {
-            await modbusClient.writeCoil(2007, false);
-          }
-        } catch (e) {
-          console.error('Error turning off tare coil:', e);
-        } finally {
-          tearActive = false;
-          sendProcessState();
-        }
-      }, 1000);
-
-      return { success: true };
-    } catch (err) {
-      tearActive = false;
-      sendProcessState();
-      sendError(`Error activating tare: ${err.message}`);
-      return { success: false, message: err.message };
-    }
-  });
-
-  // 10. Activate Normal Mode (M100 = 2100) - 1 second timed pulse
-  ipcMain.handle('utm:activate-normal', async () => {
-    if (!isConnected || !modbusClient) {
-      return { success: false, message: 'Not connected to PLC!' };
-    }
-
-    try {
-      await modbusClient.writeCoil(2100, true);
-      if (normalTimer) clearTimeout(normalTimer);
-      normalTimer = setTimeout(async () => {
-        try {
-          if (modbusClient && isConnected) {
-            await modbusClient.writeCoil(2100, false);
-          }
-        } catch (e) {
-          console.error('Error turning off normal coil:', e);
-        }
-      }, 1000);
-      return { success: true };
-    } catch (err) {
-      return { success: false, message: err.message };
-    }
-  });
-
-  // 11. Set Calibrate Mode (tare: M101=2101, calibrate: M102=2102)
-  ipcMain.handle('utm:set-calibrate-mode', async (_event, mode) => {
-    if (!isConnected || !modbusClient) {
-      return { success: false, message: 'Not connected to PLC!' };
-    }
-
-    try {
-      if (mode === 'tare') {
-        await modbusClient.writeCoil(2101, true);
-        if (tareTimer) clearTimeout(tareTimer);
-        tareTimer = setTimeout(async () => {
+        safeExecute('deactivate-tare', async () => {
           try {
-            if (modbusClient && isConnected) {
-              await modbusClient.writeCoil(2101, false);
+            if (modbusClient && isConnected && modbusClient.isOpen) {
+              await modbusClient.writeCoil(2007, false);
             }
           } catch (e) {
-            console.error('Error resetting M101 coil:', e);
+            console.error('Error turning off tare coil:', e);
+          } finally {
+            tearActive = false;
+            sendProcessState();
           }
+          return {};
+        });
+      }, 1000);
+
+      return {};
+    });
+  });
+
+  // 10. Activate Normal Mode (M100 = 2100) - 1 second timed pulse, Queued
+  ipcMain.handle('utm:activate-normal', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+
+    return await safeExecute('activate-normal', async () => {
+      await modbusClient.writeCoil(2100, true);
+      await delay(25);
+
+      if (normalTimer) clearTimeout(normalTimer);
+      normalTimer = setTimeout(() => {
+        safeExecute('deactivate-normal', async () => {
+          try {
+            if (modbusClient && isConnected && modbusClient.isOpen) {
+              await modbusClient.writeCoil(2100, false);
+            }
+          } catch (e) {}
+          return {};
+        });
+      }, 1000);
+
+      return {};
+    });
+  });
+
+  // 11. Set Calibrate Mode (tare: M101=2101, calibrate: M102=2102) - Queued
+  ipcMain.handle('utm:set-calibrate-mode', async (_event, mode) => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+
+    return await safeExecute(`set-calibrate-mode-${mode}`, async () => {
+      if (mode === 'tare') {
+        await modbusClient.writeCoil(2101, true);
+        await delay(25);
+
+        if (tareTimer) clearTimeout(tareTimer);
+        tareTimer = setTimeout(() => {
+          safeExecute('deactivate-tare-s', async () => {
+            try {
+              if (modbusClient && isConnected && modbusClient.isOpen) {
+                await modbusClient.writeCoil(2101, false);
+              }
+            } catch (e) {}
+            return {};
+          });
         }, 1000);
       } else if (mode === 'calibrate') {
         await modbusClient.writeCoil(2102, true);
+        await delay(25);
       }
-      return { success: true };
-    } catch (err) {
-      return { success: false, message: err.message };
-    }
+      return {};
+    });
   });
 
-  // 12. Send Weight Parameter (R102)
+  // 12. Send Weight Parameter (R102) - Queued
   ipcMain.handle('utm:send-weight', async (_event, value) => {
-    if (!isConnected || !modbusClient) {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC or error writing register.' };
     }
 
@@ -618,17 +767,17 @@ function setupIpcHandlers() {
       return { success: false, message: 'Weight parameter must be between 0 and 1000.' };
     }
 
-    try {
+    return await safeExecute('send-weight', async () => {
       await modbusClient.writeRegister(102, intVal);
-      return { success: true, message: `Weight parameter ${intVal} sent to register R102!` };
-    } catch (err) {
-      return { success: false, message: err.message };
-    }
+      await delay(25);
+      return { message: `Weight parameter ${intVal} sent to register R102!` };
+    });
   });
 
-  // 13. List CSV Logs
+  // 13. List CSV Logs from Documents/UTM Logs
   ipcMain.handle('logs:list', async () => {
     try {
+      if (!logsDir) initLogsDirectory();
       if (!fs.existsSync(logsDir)) {
         return { success: true, files: [] };
       }
@@ -655,6 +804,7 @@ function setupIpcHandlers() {
   // 14. Read CSV Log & parse points
   ipcMain.handle('logs:read', async (_event, filename) => {
     try {
+      if (!logsDir) initLogsDirectory();
       const fullPath = path.isAbsolute(filename) ? filename : path.join(logsDir, filename);
       if (!fs.existsSync(fullPath)) {
         return { success: false, message: 'File not found' };
@@ -707,6 +857,7 @@ function setupIpcHandlers() {
   // 15. Delete single CSV Log
   ipcMain.handle('logs:delete', async (_event, filename) => {
     try {
+      if (!logsDir) initLogsDirectory();
       const fullPath = path.isAbsolute(filename) ? filename : path.join(logsDir, filename);
       if (fs.existsSync(fullPath)) {
         fs.unlinkSync(fullPath);
@@ -720,6 +871,7 @@ function setupIpcHandlers() {
   // 16. Delete all CSV Logs
   ipcMain.handle('logs:delete-all', async () => {
     try {
+      if (!logsDir) initLogsDirectory();
       if (!fs.existsSync(logsDir)) return { success: true, count: 0 };
       const fileNames = fs.readdirSync(logsDir).filter((f) => f.endsWith('.csv'));
       let count = 0;
@@ -733,7 +885,41 @@ function setupIpcHandlers() {
     }
   });
 
-  // 17. App controls
+  // 17. Download / Export Log File
+  ipcMain.handle('logs:download', async (_event, filename) => {
+    try {
+      if (!logsDir) initLogsDirectory();
+      const fullPath = path.isAbsolute(filename) ? filename : path.join(logsDir, filename);
+      if (!fs.existsSync(fullPath)) {
+        return { success: false, message: 'File not found on disk' };
+      }
+
+      const defaultFileName = path.basename(fullPath);
+      const defaultSavePath = path.join(app.getPath('downloads'), defaultFileName);
+
+      const { canceled, filePath: savePath } = await dialog.showSaveDialog(mainWindow, {
+        title: 'Download UTM Process Log CSV',
+        defaultPath: defaultSavePath,
+        filters: [
+          { name: 'CSV Files', extensions: ['csv'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+
+      if (canceled || !savePath) {
+        return { success: false, canceled: true };
+      }
+
+      fs.copyFileSync(fullPath, savePath);
+      console.log(`📥 Downloaded ${fullPath} to ${savePath}`);
+      return { success: true, savePath, filename: defaultFileName };
+    } catch (err) {
+      console.error('Error downloading log file:', err);
+      return { success: false, message: err.message };
+    }
+  });
+
+  // 18. App controls
   ipcMain.handle('app:close', () => {
     if (mainWindow) {
       mainWindow.close();
