@@ -4,6 +4,8 @@ const fs = require('fs');
 const ModbusRTU = require('modbus-serial');
 const { SerialPort } = require('serialport');
 
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
 // Prevent garbage collection of main window
 let mainWindow = null;
 
@@ -200,7 +202,7 @@ async function disconnectModbus() {
         await new Promise((resolve) => modbusClient.close(resolve));
       }
     } catch (e) {
-      console.warn('Error closing modbus client:', e);
+      console.error('Error closing modbus client:', e);
     }
     modbusClient = null;
   }
@@ -208,53 +210,93 @@ async function disconnectModbus() {
   isConnected = false;
   currentPort = null;
   sendConnectionStatus(false, 'Disconnected');
-  sendProcessState();
 }
 
-// CSV Session Helpers
+// Connect helper
+async function connectPortInternal(portName) {
+  if (!portName) return { success: false, message: 'No COM port specified' };
+  
+  await disconnectModbus();
+
+  try {
+    modbusClient = new ModbusRTU();
+    modbusClient.setTimeout(1000);
+
+    await modbusClient.connectRTUBuffered(portName, {
+      baudRate: 9600,
+      dataBits: 8,
+      parity: 'even',
+      stopBits: 1,
+    });
+
+    modbusClient.setID(1);
+    isConnected = true;
+    currentPort = portName;
+
+    sendConnectionStatus(true, `Connected to ${portName}`);
+    startPolling();
+
+    return { success: true, message: `Connected to ${portName}` };
+  } catch (err) {
+    isConnected = false;
+    currentPort = null;
+    if (modbusClient) {
+      try { modbusClient.close(); } catch (e) {}
+      modbusClient = null;
+    }
+    sendConnectionStatus(false, `Failed to connect: ${err.message}`);
+    return { success: false, message: err.message };
+  }
+}
+
+async function autoConnectPort() {
+  try {
+    const rawPorts = await SerialPort.list();
+    if (!rawPorts || rawPorts.length === 0) return { success: false, message: 'No COM ports found' };
+
+    const converterPort = rawPorts.find((p) => {
+      const desc = `${p.friendlyName || ''} ${p.manufacturer || ''}`.toLowerCase();
+      return desc.includes('converter') || desc.includes('ch340') || desc.includes('ftdi') || desc.includes('cp210');
+    }) || rawPorts[0];
+
+    if (converterPort && converterPort.path) {
+      console.log(`Auto-connecting to ${converterPort.path}...`);
+      return await connectPortInternal(converterPort.path);
+    }
+    return { success: false, message: 'No suitable COM port found' };
+  } catch (err) {
+    console.error('Auto-connect error:', err);
+    return { success: false, message: err.message };
+  }
+}
+
+// CSV test logging helpers
 function startProcessLogging() {
   try {
-    // Generate filename matching Python format: process_data_YYYYMMDD_HHmmss.csv
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
-    const yyyy = now.getFullYear();
-    const MM = pad(now.getMonth() + 1);
-    const dd = pad(now.getDate());
-    const hh = pad(now.getHours());
-    const mm = pad(now.getMinutes());
-    const ss = pad(now.getSeconds());
-    const filename = `process_data_${yyyy}${MM}${dd}_${hh}${mm}${ss}.csv`;
-    
+    const filename = `process_data_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`;
     activeCsvPath = path.join(logsDir, filename);
     forceAccumulator = [];
-    
-    activeCsvStream = fs.createWriteStream(activeCsvPath, { encoding: 'utf8' });
-    activeCsvStream.write('Timestamp,Distance (mm),Force (mN),Force (N)\n');
-    return { success: true, filename, path: activeCsvPath };
+
+    activeCsvStream = fs.createWriteStream(activeCsvPath, { flags: 'w' });
+    activeCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    console.log(`[CSV] Started logging to ${activeCsvPath}`);
+    return { success: true, filename };
   } catch (err) {
-    console.error('Failed to start CSV logging:', err);
+    console.error('[CSV] Failed to start log file:', err);
     return { success: false, error: err.message };
   }
 }
 
 async function stopProcessLogging() {
-  if (!activeCsvStream) return;
-  
-  try {
+  if (activeCsvStream) {
     if (forceAccumulator.length > 0) {
-      const sum = forceAccumulator.reduce((a, b) => a + b, 0);
-      const avgMn = sum / forceAccumulator.length;
-      const avgN = avgMn / 1000.0;
-      
-      // Two blank separator rows for visual spacing, then Average Force row
-      activeCsvStream.write('\n\n');
-      activeCsvStream.write(`Average Force,,${avgMn.toFixed(3)},${avgN.toFixed(6)}\n`);
+      const avg = forceAccumulator.reduce((a, b) => a + b, 0) / forceAccumulator.length;
+      activeCsvStream.write(`\nAverage Force,,${avg.toFixed(3)},${(avg / 1000.0).toFixed(6)}\n`);
     }
-    
     await new Promise((resolve) => activeCsvStream.end(resolve));
-  } catch (err) {
-    console.error('Error stopping CSV logging:', err);
-  } finally {
+    console.log(`[CSV] Closed ${activeCsvPath}`);
     activeCsvStream = null;
     activeCsvPath = null;
     forceAccumulator = [];
@@ -262,37 +304,45 @@ async function stopProcessLogging() {
 }
 
 function createWindow() {
+  const preloadPath = isDev
+    ? path.join(__dirname, 'preload.js')
+    : path.join(__dirname, '.vite/build/preload/preload.js');
+
+  const iconPath = path.join(__dirname, 'assets/icon.ico');
+
   mainWindow = new BrowserWindow({
-    width: 1040,
-    height: 640,
-    minWidth: 980,
-    minHeight: 580,
-    title: 'Catheter Trackability Testing Machine',
-    icon: path.join(__dirname, 'assets', 'CTTM v1.0.0.ico'),
+    width: 1280,
+    height: 820,
+    minWidth: 1000,
+    minHeight: 650,
+    title: 'Universal Testing Machine',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
     autoHideMenuBar: true,
   });
 
-  // Log renderer load failures for diagnostics
+  mainWindow.setMenu(null);
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`[Renderer] Failed to load: ${errorDescription} (code ${errorCode}) URL: ${validatedURL}`);
   });
 
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('[Renderer] Process gone:', details.reason, details.exitCode);
-  });
-
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
   } else {
-    const rendererPath = path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`);
-    console.log('[Main] Loading renderer from:', rendererPath);
-    mainWindow.loadFile(rendererPath);
+    const prodHtml = path.join(__dirname, '.vite/build/renderer/main_window/index.html');
+    mainWindow.loadFile(prodHtml);
   }
+
+  mainWindow.on('ready-to-show', () => {
+    setTimeout(() => {
+      autoConnectPort();
+    }, 1500);
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -318,15 +368,20 @@ app.on('window-all-closed', async () => {
   }
 });
 
-// Setup IPC Handlers
+// Setup IPC handlers
 function setupIpcHandlers() {
   // 1. List Ports
   ipcMain.handle('com:list-ports', async () => {
     try {
-      const ports = await SerialPort.list();
-      const availablePorts = ports.map((p) => {
-        const desc = (p.friendlyName || p.manufacturer || p.path || '').toLowerCase();
-        const isConverter = /ch340|usb|serial|ftdi|prolific|cp210|rs-232|rs232/.test(desc);
+      const rawPorts = await SerialPort.list();
+      const availablePorts = rawPorts.map((p) => {
+        const desc = `${p.friendlyName || ''} ${p.manufacturer || ''}`.toLowerCase();
+        const isConverter =
+          desc.includes('converter') ||
+          desc.includes('ch340') ||
+          desc.includes('ftdi') ||
+          desc.includes('cp210') ||
+          desc.includes('usb-serial');
         return {
           device: p.path,
           description: p.friendlyName || p.manufacturer || p.path,
@@ -334,7 +389,6 @@ function setupIpcHandlers() {
         };
       });
 
-      // Sort by COM port number
       availablePorts.sort((a, b) => {
         const numA = parseInt((a.device.match(/COM(\d+)/i) || [])[1] || '999', 10);
         const numB = parseInt((b.device.match(/COM(\d+)/i) || [])[1] || '999', 10);
@@ -349,39 +403,7 @@ function setupIpcHandlers() {
 
   // 2. Connect
   ipcMain.handle('com:connect', async (_event, portName) => {
-    if (!portName) return { success: false, message: 'No COM port specified' };
-    
-    await disconnectModbus();
-
-    try {
-      modbusClient = new ModbusRTU();
-      modbusClient.setTimeout(1000);
-
-      await modbusClient.connectRTUBuffered(portName, {
-        baudRate: 9600,
-        dataBits: 8,
-        parity: 'even',
-        stopBits: 1,
-      });
-
-      modbusClient.setID(1);
-      isConnected = true;
-      currentPort = portName;
-
-      sendConnectionStatus(true, `Connected to ${portName}`);
-      startPolling();
-
-      return { success: true, message: `Connected to ${portName}` };
-    } catch (err) {
-      isConnected = false;
-      currentPort = null;
-      if (modbusClient) {
-        try { modbusClient.close(); } catch (e) {}
-        modbusClient = null;
-      }
-      sendConnectionStatus(false, `Failed to connect: ${err.message}`);
-      return { success: false, message: err.message };
-    }
+    return await connectPortInternal(portName);
   });
 
   // 3. Disconnect
@@ -390,7 +412,15 @@ function setupIpcHandlers() {
     return { success: true, message: 'Disconnected' };
   });
 
-  // 4. Get Status
+  // 4. Reconnect
+  ipcMain.handle('com:reconnect', async () => {
+    if (currentPort) {
+      return await connectPortInternal(currentPort);
+    }
+    return await autoConnectPort();
+  });
+
+  // 5. Connection Status
   ipcMain.handle('com:get-status', () => {
     return {
       connected: isConnected,
@@ -401,7 +431,7 @@ function setupIpcHandlers() {
     };
   });
 
-  // 5. Start Process (M3 = 2003)
+  // 6. Start Process (M3 = 2003)
   ipcMain.handle('utm:start-process', async () => {
     if (!isConnected || !modbusClient) {
       return { success: false, message: 'Not connected to PLC!' };
@@ -416,8 +446,6 @@ function setupIpcHandlers() {
         return { success: false, message: logResult.error };
       }
 
-      // Write coils according to Python UTM logic:
-      // COIL_START (2003)=true, COIL_RESET (2004)=false, COIL_STOP (2006)=false, COIL_TEAR (2007)=false
       await modbusClient.writeCoil(2003, true);
       await modbusClient.writeCoil(2004, false);
       await modbusClient.writeCoil(2006, false);
@@ -435,7 +463,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 6. Stop Process (M6 = 2006)
+  // 7. Stop Process (M6 = 2006)
   ipcMain.handle('utm:stop-process', async () => {
     if (!isConnected || !modbusClient) {
       processRunning = false;
@@ -445,7 +473,6 @@ function setupIpcHandlers() {
     }
 
     try {
-      // COIL_STOP (2006)=true, COIL_START (2003)=false, COIL_RESET (2004)=false, COIL_TEAR (2007)=false
       await modbusClient.writeCoil(2006, true);
       await modbusClient.writeCoil(2003, false);
       await modbusClient.writeCoil(2004, false);
@@ -465,7 +492,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 7. Reset Process (M4 = 2004)
+  // 8. Reset Process (M4 = 2004)
   ipcMain.handle('utm:reset-process', async () => {
     if (processRunning) {
       processRunning = false;
@@ -478,7 +505,6 @@ function setupIpcHandlers() {
     }
 
     try {
-      // COIL_RESET (2004)=true, COIL_STOP (2006)=false, COIL_START (2003)=false, COIL_TEAR (2007)=false
       await modbusClient.writeCoil(2004, true);
       await modbusClient.writeCoil(2006, false);
       await modbusClient.writeCoil(2003, false);
@@ -492,26 +518,17 @@ function setupIpcHandlers() {
     }
   });
 
-  // 8. Tare (M7 = 2007) - 1 second timed pulse
+  // 9. Tare (M7 = 2007) - 1 second timed pulse
   ipcMain.handle('utm:activate-tare', async () => {
     if (!isConnected || !modbusClient) {
       return { success: false, message: 'Not connected to PLC!' };
     }
     if (tearActive) {
-      return { success: false, message: 'Tare is already active!' };
+      return { success: false, message: 'Tare is already active' };
     }
 
     try {
-      if (processRunning) {
-        processRunning = false;
-        await stopProcessLogging();
-      }
-
       await modbusClient.writeCoil(2007, true);
-      await modbusClient.writeCoil(2003, false);
-      await modbusClient.writeCoil(2006, false);
-      await modbusClient.writeCoil(2004, false);
-
       tearActive = true;
       sendProcessState();
 
@@ -522,10 +539,9 @@ function setupIpcHandlers() {
             await modbusClient.writeCoil(2007, false);
           }
         } catch (e) {
-          console.error('Error turning off Tare M7:', e);
+          console.error('Error turning off tare coil:', e);
         } finally {
           tearActive = false;
-          tearTimer = null;
           sendProcessState();
         }
       }, 1000);
@@ -534,12 +550,12 @@ function setupIpcHandlers() {
     } catch (err) {
       tearActive = false;
       sendProcessState();
-      sendError(`Error turning on Tare (M7): ${err.message}`);
+      sendError(`Error activating tare: ${err.message}`);
       return { success: false, message: err.message };
     }
   });
 
-  // 9. Calibration: Normal Mode (M100 = 2100) - 1-second pulse
+  // 10. Activate Normal Mode (M100 = 2100) - 1 second timed pulse
   ipcMain.handle('utm:activate-normal', async () => {
     if (!isConnected || !modbusClient) {
       return { success: false, message: 'Not connected to PLC!' };
@@ -554,32 +570,23 @@ function setupIpcHandlers() {
             await modbusClient.writeCoil(2100, false);
           }
         } catch (e) {
-          console.error('Error turning off Normal M100:', e);
-        } finally {
-          normalTimer = null;
+          console.error('Error turning off normal coil:', e);
         }
       }, 1000);
-
       return { success: true };
     } catch (err) {
       return { success: false, message: err.message };
     }
   });
 
-  // 10. Calibration: Set Mode Coil (M100 / M102)
+  // 11. Set Calibrate Mode (tare: M101=2101, calibrate: M102=2102)
   ipcMain.handle('utm:set-calibrate-mode', async (_event, mode) => {
     if (!isConnected || !modbusClient) {
       return { success: false, message: 'Not connected to PLC!' };
     }
 
     try {
-      if (mode === 'normal') {
-        await modbusClient.writeCoil(2100, true);
-        await modbusClient.writeCoil(2102, false);
-      } else if (mode === 'calibrate') {
-        await modbusClient.writeCoil(2100, false);
-        await modbusClient.writeCoil(2102, true);
-      } else if (mode === 'tare') {
+      if (mode === 'tare') {
         await modbusClient.writeCoil(2101, true);
         if (tareTimer) clearTimeout(tareTimer);
         tareTimer = setTimeout(async () => {
@@ -587,8 +594,12 @@ function setupIpcHandlers() {
             if (modbusClient && isConnected) {
               await modbusClient.writeCoil(2101, false);
             }
-          } catch (e) {}
+          } catch (e) {
+            console.error('Error resetting M101 coil:', e);
+          }
         }, 1000);
+      } else if (mode === 'calibrate') {
+        await modbusClient.writeCoil(2102, true);
       }
       return { success: true };
     } catch (err) {
@@ -596,7 +607,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 11. Calibration: Send Weight to R102 (REG_WEIGHT)
+  // 12. Send Weight Parameter (R102)
   ipcMain.handle('utm:send-weight', async (_event, value) => {
     if (!isConnected || !modbusClient) {
       return { success: false, message: 'Not connected to PLC or error writing register.' };
@@ -615,7 +626,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 12. List CSV Logs
+  // 13. List CSV Logs
   ipcMain.handle('logs:list', async () => {
     try {
       if (!fs.existsSync(logsDir)) {
@@ -634,16 +645,14 @@ function setupIpcHandlers() {
         };
       });
 
-      // Sort newest first
       fileList.sort((a, b) => b.mtime - a.mtime);
-
       return { success: true, files: fileList };
     } catch (err) {
       return { success: false, error: err.message, files: [] };
     }
   });
 
-  // 13. Read CSV Log & parse points
+  // 14. Read CSV Log & parse points
   ipcMain.handle('logs:read', async (_event, filename) => {
     try {
       const fullPath = path.isAbsolute(filename) ? filename : path.join(logsDir, filename);
@@ -695,7 +704,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 14. Delete single CSV Log
+  // 15. Delete single CSV Log
   ipcMain.handle('logs:delete', async (_event, filename) => {
     try {
       const fullPath = path.isAbsolute(filename) ? filename : path.join(logsDir, filename);
@@ -708,7 +717,7 @@ function setupIpcHandlers() {
     }
   });
 
-  // 15. Delete all CSV Logs
+  // 16. Delete all CSV Logs
   ipcMain.handle('logs:delete-all', async () => {
     try {
       if (!fs.existsSync(logsDir)) return { success: true, count: 0 };
@@ -724,11 +733,10 @@ function setupIpcHandlers() {
     }
   });
 
-  // 16. App controls
+  // 17. App controls
   ipcMain.handle('app:close', () => {
     if (mainWindow) {
       mainWindow.close();
     }
   });
 }
-
