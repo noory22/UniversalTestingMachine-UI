@@ -584,6 +584,10 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('start-process', async () => {
+      // Reset cached distance and force on start so old test values don't leak
+      lastDistance = 0;
+      lastForce = 0.0;
+
       // Sequential coil writes with 25ms inter-frame gap matching Python main.py
       await modbusClient.writeCoil(2003, true);   // COIL_START (M3)
       await delay(25);
@@ -597,6 +601,17 @@ function setupIpcHandlers() {
       processRunning = true;
       tearActive = false;
       sendProcessState();
+
+      // Broadcast clean initial telemetry
+      sendTelemetry({
+        distance: 0,
+        force: 0.0,
+        r100: lastR100,
+        r101: lastR101,
+        regZ: regZValue,
+        processRunning: true,
+        tearActive: false,
+      });
 
       return { filename: logResult.filename };
     });
@@ -636,8 +651,21 @@ function setupIpcHandlers() {
       await stopProcessLogging();
     }
 
+    // Immediately reset distance and force caches and notify UI
+    lastDistance = 0;
+    lastForce = 0.0;
+    sendProcessState();
+    sendTelemetry({
+      distance: 0,
+      force: 0.0,
+      r100: lastR100,
+      r101: lastR101,
+      regZ: regZValue,
+      processRunning: false,
+      tearActive: false,
+    });
+
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
-      sendProcessState();
       return { success: true };
     }
 
@@ -651,7 +679,26 @@ function setupIpcHandlers() {
       await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
       await delay(25);
 
+      // Attempt to zero distance register R10 directly in PLC if writable
+      try {
+        await modbusClient.writeRegister(10, 0);
+      } catch (e) {
+        // Silently continue if R10 is read-only in PLC ladder logic
+      }
+
+      lastDistance = 0;
+      lastForce = 0.0;
       sendProcessState();
+      sendTelemetry({
+        distance: 0,
+        force: 0.0,
+        r100: lastR100,
+        r101: lastR101,
+        regZ: regZValue,
+        processRunning: false,
+        tearActive: false,
+      });
+
       return {};
     });
   });

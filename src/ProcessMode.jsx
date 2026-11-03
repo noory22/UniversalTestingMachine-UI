@@ -51,6 +51,11 @@ export default function ProcessMode() {
   const [activeTab, setActiveTab] = useState('chart'); // 'chart' | 'table'
 
   const chartRef = useRef(null);
+  const processStateRef = useRef(processState);
+
+  useEffect(() => {
+    processStateRef.current = processState;
+  }, [processState]);
 
   // Initialize and register event listeners
   useEffect(() => {
@@ -87,6 +92,16 @@ export default function ProcessMode() {
           setTelemetry(data);
           if (data.regZ !== undefined) {
             setProcessState((prev) => ({ ...prev, regZ: data.regZ }));
+          }
+
+          // Collect data points only when fresh telemetry arrives during an active test run
+          const isRunning = data.processRunning !== undefined ? data.processRunning : processStateRef.current.processRunning;
+          const isTear = data.tearActive !== undefined ? data.tearActive : processStateRef.current.tearActive;
+          if (isRunning && !isTear && data.distance !== undefined && data.force !== undefined) {
+            setDataPoints((prev) => {
+              const next = [...prev, { distance: data.distance, force: data.force }];
+              return next.length > 1500 ? next.slice(-1500) : next;
+            });
           }
         });
       }
@@ -125,15 +140,7 @@ export default function ProcessMode() {
     };
   }, []);
 
-  // Collect data points when test is running
-  useEffect(() => {
-    if (processState.processRunning && !processState.tearActive && telemetry) {
-      setDataPoints((prev) => {
-        const next = [...prev, { distance: telemetry.distance, force: telemetry.force }];
-        return next.length > 1500 ? next.slice(-1500) : next;
-      });
-    }
-  }, [telemetry, processState.processRunning, processState.tearActive]);
+
 
   const handleReconnect = async () => {
     try {
@@ -158,6 +165,7 @@ export default function ProcessMode() {
     try {
       setActionLoading(true);
       setDataPoints([]);
+      setTelemetry((prev) => ({ ...prev, distance: 0 }));
       const res = await window.api.startProcess();
       if (!res.success) {
         setErrorMessage(res.message || 'Failed to start testing process');
@@ -187,6 +195,7 @@ export default function ProcessMode() {
     try {
       setActionLoading(true);
       setDataPoints([]);
+      setTelemetry((prev) => ({ ...prev, distance: 0, force: 0 }));
       const res = await window.api.resetProcess();
       if (!res.success && res.message) {
         setErrorMessage(res.message);
@@ -290,7 +299,7 @@ export default function ProcessMode() {
   const isTearActive = processState.tearActive;
   const isRegZReady = processState.regZ === 1;
 
-  const displayDistance = isTearActive ? '--' : isRunning && dataPoints.length === 0 ? 'Reading...' : (telemetry?.distance ?? 0);
+  const displayDistance = isTearActive ? '--' : (telemetry?.distance ?? 0);
   const displayForce = isTearActive
     ? '--'
     : isRunning && dataPoints.length === 0
