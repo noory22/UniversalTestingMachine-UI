@@ -6,6 +6,7 @@ import MainMenu from './MainMenu.jsx';
 import ProcessMode from './ProcessMode.jsx';
 import ProcessLogs from './ProcessLogs.jsx';
 import Settings from './Settings.jsx';
+import Manual from './Manual.jsx';
 
 const rootElement = document.getElementById('root');
 const root = ReactDOM.createRoot(rootElement);
@@ -16,6 +17,7 @@ const App = () => {
       <Routes>
         <Route path="/" element={<MainMenu />} />
         <Route path="/process-mode" element={<ProcessMode />} />
+        <Route path="/manual-mode" element={<Manual />} />
         <Route path="/process-logs" element={<ProcessLogs />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>

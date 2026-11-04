@@ -29,6 +29,21 @@ let lastForce = 0.0;
 let lastR100 = 0;
 let lastR101 = 0;
 
+// Manual Mode Coils, Registers & State (UTM)
+const COIL_MANUAL = 2010;        // M10: Manual Mode master
+const COIL_MOTOR_UP = 2011;      // M11: Motor Up
+const COIL_MOTOR_DOWN = 2012;    // M12: Motor Down
+const COIL_HOMING = 2013;        // M13: Homing
+const REG_MANUAL_DISTANCE = 6002; // D2: Distance (Fatek offset 6000 + 2)
+const REG_MANUAL_FORCE = 154;     // R154: Force (Fatek offset 154)
+
+let manualModeActive = false;
+let motorUpState = false;
+let motorDownState = false;
+let homingState = false;
+let lastManualDistance = 0;
+let lastManualForce = 0;
+
 // Synchronized Command Queue (Eliminates half-duplex serial collisions)
 const commandQueue = [];
 
@@ -249,6 +264,34 @@ async function processModbusLoop() {
         }
       } catch (e) {}
 
+      await delay(20);
+
+      // 3e. Read Manual Distance: D2 (6002)
+      let manualDistance = lastManualDistance;
+      try {
+        const respD2 = await modbusClient.readHoldingRegisters(REG_MANUAL_DISTANCE, 1);
+        if (respD2 && respD2.data && respD2.data.length > 0) {
+          const rawD2 = respD2.data[0];
+          manualDistance = rawD2 > 32767 ? rawD2 - 65536 : rawD2;
+          lastManualDistance = manualDistance;
+          cycleSuccess = true;
+        }
+      } catch (e) {}
+
+      await delay(20);
+
+      // 3f. Read Manual Force: R154 (154)
+      let manualForce = lastManualForce;
+      try {
+        const respR154 = await modbusClient.readHoldingRegisters(REG_MANUAL_FORCE, 1);
+        if (respR154 && respR154.data && respR154.data.length > 0) {
+          const rawR154 = respR154.data[0];
+          manualForce = rawR154 > 32767 ? rawR154 - 65536 : rawR154;
+          lastManualForce = manualForce;
+          cycleSuccess = true;
+        }
+      } catch (e) {}
+
       // Connection health check
       if (cycleSuccess) {
         consecutiveErrors = 0;
@@ -271,6 +314,12 @@ async function processModbusLoop() {
         regZ: regZValue,
         processRunning,
         tearActive,
+        manualDistance,
+        manualForce,
+        manualModeActive,
+        motorUp: motorUpState,
+        motorDown: motorDownState,
+        homing: homingState,
       });
 
       // Record CSV row if process is active and tare is not running
@@ -294,6 +343,10 @@ async function processModbusLoop() {
 
 // Disconnect helper
 async function disconnectModbus() {
+  manualModeActive = false;
+  motorUpState = false;
+  motorDownState = false;
+  homingState = false;
   commandQueue.length = 0;
 
   if (tearTimer) {
@@ -966,7 +1019,167 @@ function setupIpcHandlers() {
     }
   });
 
-  // 18. App controls
+  // 18. Manual Mode (M10 = 2010)
+  const handleManualActivate = async () => {
+    return await safeExecute('manual-mode', async () => {
+      manualModeActive = true;
+      motorUpState = false;
+      motorDownState = false;
+      homingState = false;
+
+      await modbusClient.writeCoil(2010, true);  // M10: Manual Mode master
+      await delay(25);
+      await modbusClient.writeCoil(2011, false); // M11: Motor Up
+      await delay(25);
+      await modbusClient.writeCoil(2012, false); // M12: Motor Down
+      await delay(25);
+      await modbusClient.writeCoil(2013, false); // M13: Homing
+      await delay(25);
+
+      return { success: true, manualModeActivated: true, manualModeActive: true };
+    });
+  };
+  ipcMain.handle('manual', handleManualActivate);
+  ipcMain.handle('utm:manual-mode', handleManualActivate);
+
+  // 19. Motor Up (M11 = 2011) - Toggle with mutual exclusivity
+  const handleMotorUp = async () => {
+    return await safeExecute('motor-up', async () => {
+      motorUpState = !motorUpState;
+      if (motorUpState) {
+        motorDownState = false; // Mutual exclusivity: starting Up stops Down
+      }
+
+      await modbusClient.writeCoil(2010, true);  // Ensure M10 is ON
+      await delay(25);
+      await modbusClient.writeCoil(2012, false); // Turn OFF Down (M12)
+      await delay(25);
+      await modbusClient.writeCoil(2011, motorUpState); // Set Up (M11)
+      await delay(25);
+
+      return {
+        success: true,
+        motorUpState: motorUpState ? 'ON' : 'OFF',
+        motorUp: motorUpState,
+        insertion: motorUpState,
+        message: `Motor Up turned ${motorUpState ? 'ON' : 'OFF'}`,
+      };
+    });
+  };
+  ipcMain.handle('motor-up', handleMotorUp);
+  ipcMain.handle('insertion', handleMotorUp);
+  ipcMain.handle('utm:motor-up', handleMotorUp);
+
+  // 20. Motor Down (M12 = 2012) - Toggle with mutual exclusivity
+  const handleMotorDown = async () => {
+    return await safeExecute('motor-down', async () => {
+      motorDownState = !motorDownState;
+      if (motorDownState) {
+        motorUpState = false; // Mutual exclusivity: starting Down stops Up
+      }
+
+      await modbusClient.writeCoil(2010, true);  // Ensure M10 is ON
+      await delay(25);
+      await modbusClient.writeCoil(2011, false); // Turn OFF Up (M11)
+      await delay(25);
+      await modbusClient.writeCoil(2012, motorDownState); // Set Down (M12)
+      await delay(25);
+
+      return {
+        success: true,
+        motorDownState: motorDownState ? 'ON' : 'OFF',
+        motorDown: motorDownState,
+        retraction: motorDownState,
+        message: `Motor Down turned ${motorDownState ? 'ON' : 'OFF'}`,
+      };
+    });
+  };
+  ipcMain.handle('motor-down', handleMotorDown);
+  ipcMain.handle('ret', handleMotorDown);
+  ipcMain.handle('utm:motor-down', handleMotorDown);
+
+  // 21. Motor Stop (Both M11 and M12 OFF)
+  const handleMotorStop = async () => {
+    return await safeExecute('motor-stop', async () => {
+      motorUpState = false;
+      motorDownState = false;
+
+      await modbusClient.writeCoil(2011, false);
+      await delay(25);
+      await modbusClient.writeCoil(2012, false);
+      await delay(25);
+
+      return { success: true, motorUp: false, motorDown: false };
+    });
+  };
+  ipcMain.handle('motor-stop', handleMotorStop);
+  ipcMain.handle('utm:motor-stop', handleMotorStop);
+
+  // 22. Homing (M13 = 2013)
+  const handleHoming = async () => {
+    return await safeExecute('home', async () => {
+      motorUpState = false;
+      motorDownState = false;
+      homingState = true;
+
+      // Stop any active movement before homing
+      await modbusClient.writeCoil(2011, false);
+      await delay(25);
+      await modbusClient.writeCoil(2012, false);
+      await delay(25);
+      // Turn ON homing coil M13
+      await modbusClient.writeCoil(2013, true);
+      await delay(25);
+
+      return { success: true, homing: true };
+    });
+  };
+  ipcMain.handle('home', handleHoming);
+  ipcMain.handle('utm:home', handleHoming);
+
+  // 23. Disable Manual Mode (M10, M11, M12, M13 = false)
+  const handleDisableManual = async () => {
+    return await safeExecute('disable-manual-mode', async () => {
+      manualModeActive = false;
+      motorUpState = false;
+      motorDownState = false;
+      homingState = false;
+
+      await modbusClient.writeCoil(2010, false); // M10 = false
+      await delay(25);
+      await modbusClient.writeCoil(2011, false); // M11 = false
+      await delay(25);
+      await modbusClient.writeCoil(2012, false); // M12 = false
+      await delay(25);
+      await modbusClient.writeCoil(2013, false); // M13 = false
+      await delay(25);
+
+      return { success: true, manualModeDisabled: true, manualModeActive: false };
+    });
+  };
+  ipcMain.handle('disable-manual-mode', handleDisableManual);
+  ipcMain.handle('utm:disable-manual-mode', handleDisableManual);
+
+  // 24. Read PLC Data (for compatibility with CTTM-VD polling pattern)
+  ipcMain.handle('read-data', async () => {
+    return {
+      success: true,
+      connected: isConnected,
+      distance: lastManualDistance,
+      manualDistance: lastManualDistance,
+      force: lastManualForce,
+      force_mN: lastManualForce,
+      manualForce: lastManualForce,
+      motorUp: motorUpState,
+      motorDown: motorDownState,
+      insertion: motorUpState,
+      retraction: motorDownState,
+      homing: homingState,
+      manualMode: manualModeActive,
+    };
+  });
+
+  // 25. App controls
   ipcMain.handle('app:close', () => {
     if (mainWindow) {
       mainWindow.close();

@@ -78,6 +78,14 @@ const MainMenu = () => {
       path: '/process-mode',
     },
     {
+      id: 'manual-mode',
+      title: 'Manual Mode',
+      icon: <Activity className="w-8 h-8" />,
+      description: 'Jog crosshead motor Up/Down, trigger homing, and inspect live distance & load cell readings',
+      gradient: 'from-amber-500 to-orange-500',
+      path: '/manual-mode',
+    },
+    {
       id: 'process-logs',
       title: 'Show Process Logs',
       icon: <FileText className="w-8 h-8" />,
@@ -170,6 +178,9 @@ const MainMenu = () => {
                     }`}
                     onClick={() => {
                       setSelectedOption(option.id);
+                      if (option.id === 'manual-mode' && window.api && window.api.manual) {
+                        window.api.manual().catch((err) => console.error('Manual mode activate error:', err));
+                      }
                       navigate(option.path);
                     }}
                     style={{ animationDelay: `${index * 100}ms` }}

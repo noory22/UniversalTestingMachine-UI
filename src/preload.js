@@ -33,6 +33,26 @@ contextBridge.exposeInMainWorld('api', {
   exportCsvLog: (filename) => ipcRenderer.invoke('logs:download', filename),
 
   // Event Subscriptions
+  // Manual Mode Controls (UTM)
+  manual: () => ipcRenderer.invoke('manual'),
+  activateManualMode: () => ipcRenderer.invoke('manual'),
+  disableManualMode: () => ipcRenderer.invoke('disable-manual-mode'),
+  motorUp: () => ipcRenderer.invoke('motor-up'),
+  insertion: () => ipcRenderer.invoke('insertion'),
+  motorDown: () => ipcRenderer.invoke('motor-down'),
+  ret: () => ipcRenderer.invoke('ret'),
+  motorStop: () => ipcRenderer.invoke('motor-stop'),
+  home: () => ipcRenderer.invoke('home'),
+  homeManual: () => ipcRenderer.invoke('home'),
+  readData: () => ipcRenderer.invoke('read-data'),
+  checkPowerStatus: async () => {
+    try {
+      const status = await ipcRenderer.invoke('com:get-status');
+      return { active: status && status.connected };
+    } catch {
+      return { active: false };
+    }
+  },
   onTelemetry: (callback) => {
     const subscription = (_event, data) => callback(data);
     ipcRenderer.on('utm:telemetry', subscription);
