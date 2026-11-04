@@ -35,7 +35,9 @@ const COIL_MOTOR_UP = 2011;      // M11: Motor Up
 const COIL_MOTOR_DOWN = 2012;    // M12: Motor Down
 const COIL_HOMING = 2013;        // M13: Homing
 const REG_MANUAL_DISTANCE = 6002; // D2: Distance (Fatek offset 6000 + 2)
-const REG_MANUAL_FORCE = 154;     // R154: Force (Fatek offset 154)
+const REG_FORCE = 154;            // R154 (+ R155): Force (32-bit Float LE, used across all modes)
+const REG_MANUAL_FORCE = 154;     // Backwards-compatibility alias
+const INPUT_X1 = 1001;           // X1: Homing / Lower limit switch (Fatek offset 1000 + 1)
 
 let manualModeActive = false;
 let motorUpState = false;
@@ -43,6 +45,7 @@ let motorDownState = false;
 let homingState = false;
 let lastManualDistance = 0;
 let lastManualForce = 0;
+let lastX1 = false;
 
 // Synchronized Command Queue (Eliminates half-duplex serial collisions)
 const commandQueue = [];
@@ -227,20 +230,21 @@ async function processModbusLoop() {
 
       await delay(20);
 
-      // 3c. Read Force REG_Y (R14 + R15) - 32-bit float LE
+      // 3c. Read Force: R154 + R155 (32-bit float LE, unified for all modes)
       let force = lastForce;
       try {
-        const respY = await modbusClient.readHoldingRegisters(14, 2);
-        if (respY && respY.data && respY.data.length >= 2) {
-          const r14 = respY.data[0]; // low word
-          const r15 = respY.data[1]; // high word
+        const respForce = await modbusClient.readHoldingRegisters(REG_FORCE, 2);
+        if (respForce && respForce.data && respForce.data.length >= 2) {
+          const r154 = respForce.data[0]; // low word
+          const r155 = respForce.data[1]; // high word
           const buf = Buffer.alloc(4);
-          buf.writeUInt16LE(r14, 0);
-          buf.writeUInt16LE(r15, 2);
+          buf.writeUInt16LE(r154, 0);
+          buf.writeUInt16LE(r155, 2);
           const f = buf.readFloatLE(0);
           if (!isNaN(f)) {
             force = f;
             lastForce = force;
+            lastManualForce = force;
             cycleSuccess = true;
           }
         }
@@ -278,19 +282,48 @@ async function processModbusLoop() {
         }
       } catch (e) {}
 
+      // 3f. Manual force is unified with R154 32-bit float
+      let manualForce = force;
+
       await delay(20);
 
-      // 3f. Read Manual Force: R154 (154)
-      let manualForce = lastManualForce;
+      // 3g. Read X1 Discrete Input: Homing / Lower Limit Sensor (Fatek 1001)
+      let x1 = lastX1;
       try {
-        const respR154 = await modbusClient.readHoldingRegisters(REG_MANUAL_FORCE, 1);
-        if (respR154 && respR154.data && respR154.data.length > 0) {
-          const rawR154 = respR154.data[0];
-          manualForce = rawR154 > 32767 ? rawR154 - 65536 : rawR154;
-          lastManualForce = manualForce;
+        const respX1 = await modbusClient.readDiscreteInputs(INPUT_X1, 1);
+        if (respX1 && respX1.data && respX1.data.length > 0) {
+          x1 = Boolean(respX1.data[0]);
+          lastX1 = x1;
           cycleSuccess = true;
         }
-      } catch (e) {}
+      } catch (e) {
+        try {
+          const respCoil = await modbusClient.readCoils(INPUT_X1, 1);
+          if (respCoil && respCoil.data && respCoil.data.length > 0) {
+            x1 = Boolean(respCoil.data[0]);
+            lastX1 = x1;
+            cycleSuccess = true;
+          }
+        } catch (e2) {}
+      }
+
+      // Safety Guard: If machine reaches X1 home limit while moving down, halt Motor Down (M12)
+      if (x1 && motorDownState) {
+        console.warn('⚠️ X1 limit switch active while moving Down! Automatically halting Motor Down (M12).');
+        motorDownState = false;
+        try {
+          await modbusClient.writeCoil(2012, false);
+        } catch (e) {}
+      }
+
+      // Homing Completion Guard: If X1 limit reached, homing sequence is finished
+      if (x1 && homingState) {
+        console.log('✅ Homing completed (X1 active). Deactivating homing coil M13 and clearing homingState.');
+        homingState = false;
+        try {
+          await modbusClient.writeCoil(2013, false);
+        } catch (e) {}
+      }
 
       // Connection health check
       if (cycleSuccess) {
@@ -319,7 +352,9 @@ async function processModbusLoop() {
         manualModeActive,
         motorUp: motorUpState,
         motorDown: motorDownState,
-        homing: homingState,
+        homing: homingState && !lastX1,
+        x1: lastX1,
+        atHome: lastX1,
       });
 
       // Record CSV row if process is active and tare is not running
@@ -347,6 +382,9 @@ async function disconnectModbus() {
   motorUpState = false;
   motorDownState = false;
   homingState = false;
+  lastForce = 0.0;
+  lastManualForce = 0.0;
+  lastX1 = false;
   commandQueue.length = 0;
 
   if (tearTimer) {
@@ -1072,6 +1110,20 @@ function setupIpcHandlers() {
 
   // 20. Motor Down (M12 = 2012) - Toggle with mutual exclusivity
   const handleMotorDown = async () => {
+    // Safety check: Machine is at Home (X1 active) -> Downward movement prohibited
+    if (lastX1) {
+      if (motorDownState) {
+        motorDownState = false;
+        await safeExecute('stop-down-on-x1', async () => {
+          await modbusClient.writeCoil(2012, false);
+        });
+      }
+      return {
+        success: false,
+        message: 'Cannot move down: Machine is already at the Home limit (X1 active). Only upward movement is permitted.',
+      };
+    }
+
     return await safeExecute('motor-down', async () => {
       motorDownState = !motorDownState;
       if (motorDownState) {
@@ -1117,6 +1169,14 @@ function setupIpcHandlers() {
 
   // 22. Homing (M13 = 2013)
   const handleHoming = async () => {
+    // Safety check: Machine already at Home (X1 active) -> Homing not needed
+    if (lastX1) {
+      return {
+        success: false,
+        message: 'Machine is already at the Homing position (X1 active).',
+      };
+    }
+
     return await safeExecute('home', async () => {
       motorUpState = false;
       motorDownState = false;
@@ -1167,15 +1227,17 @@ function setupIpcHandlers() {
       connected: isConnected,
       distance: lastManualDistance,
       manualDistance: lastManualDistance,
-      force: lastManualForce,
-      force_mN: lastManualForce,
-      manualForce: lastManualForce,
+      force: lastForce,
+      force_mN: lastForce,
+      manualForce: lastForce,
       motorUp: motorUpState,
       motorDown: motorDownState,
       insertion: motorUpState,
       retraction: motorDownState,
-      homing: homingState,
+      homing: homingState && !lastX1,
       manualMode: manualModeActive,
+      x1: lastX1,
+      atHome: lastX1,
     };
   });
 

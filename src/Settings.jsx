@@ -381,7 +381,7 @@ export default function Settings() {
                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
                       REAL-TIME FORCE
                     </span>
-                    <span className="text-[10px] font-mono text-slate-400">Registers R14 & R15</span>
+                    <span className="text-[10px] font-mono text-slate-400">Registers R154 & R155 (32-bit Float)</span>
                   </div>
                   <div className="text-right">
                     <span className="text-2xl md:text-3xl font-bold text-emerald-600 font-mono tracking-tight">

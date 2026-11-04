@@ -18,7 +18,7 @@ import {
 const Manual = () => {
   const navigate = useNavigate();
 
-  // Telemetry Readings (D2 = Distance, R154 = Force)
+  // Telemetry Readings (D2 = Distance, R154 = Force 32-bit Float)
   const [distance, setDistance] = useState('--');
   const [force, setForce] = useState('--');
 
@@ -39,6 +39,7 @@ const Manual = () => {
 
   const [powerActive, setPowerActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [x1Active, setX1Active] = useState(false);
 
   // 1. Initial connection check and manual mode activation on mount
   useEffect(() => {
@@ -105,12 +106,17 @@ const Manual = () => {
           setForce(data.force);
         }
 
+        const isX1 = data.x1 !== undefined ? Boolean(data.x1) : false;
+        if (data.x1 !== undefined) {
+          setX1Active(isX1);
+        }
+
         // Hardware state synchronization
         setControls((prev) => ({
           ...prev,
           motorUp: data.motorUp !== undefined ? Boolean(data.motorUp) : prev.motorUp,
-          motorDown: data.motorDown !== undefined ? Boolean(data.motorDown) : prev.motorDown,
-          homing: data.homing !== undefined ? Boolean(data.homing) : prev.homing,
+          motorDown: isX1 ? false : (data.motorDown !== undefined ? Boolean(data.motorDown) : prev.motorDown),
+          homing: isX1 ? false : (data.homing !== undefined ? Boolean(data.homing) : prev.homing),
           manualMode: data.manualModeActive !== undefined ? Boolean(data.manualModeActive) : prev.manualMode,
         }));
       });
@@ -124,11 +130,15 @@ const Manual = () => {
             if (!isMounted || !data) return;
             if (data.manualDistance !== undefined) setDistance(data.manualDistance);
             if (data.manualForce !== undefined) setForce(data.manualForce);
+            const isX1 = data.x1 !== undefined ? Boolean(data.x1) : false;
+            if (data.x1 !== undefined) {
+              setX1Active(isX1);
+            }
             setControls((prev) => ({
               ...prev,
               motorUp: data.motorUp !== undefined ? Boolean(data.motorUp) : (data.insertion !== undefined ? Boolean(data.insertion) : prev.motorUp),
-              motorDown: data.motorDown !== undefined ? Boolean(data.motorDown) : (data.retraction !== undefined ? Boolean(data.retraction) : prev.motorDown),
-              homing: data.homing !== undefined ? Boolean(data.homing) : prev.homing,
+              motorDown: isX1 ? false : (data.motorDown !== undefined ? Boolean(data.motorDown) : (data.retraction !== undefined ? Boolean(data.retraction) : prev.motorDown)),
+              homing: isX1 ? false : (data.homing !== undefined ? Boolean(data.homing) : prev.homing),
               manualMode: data.manualMode !== undefined ? Boolean(data.manualMode) : prev.manualMode,
             }));
           })
@@ -208,6 +218,11 @@ const Manual = () => {
       return;
     }
 
+    if (x1Active) {
+      alert('Cannot move down: Machine is already at the Homing position (X1 active). Only upward movement is permitted.');
+      return;
+    }
+
     // If Motor Down is currently active in UI, turn it OFF
     if (controls.motorDown) {
       console.log('Attempting to STOP Motor Down (M12)...');
@@ -274,6 +289,11 @@ const Manual = () => {
   const handleHoming = () => {
     if (!connectionStatus.connected) {
       alert('PLC is not connected. Please connect to PLC first.');
+      return;
+    }
+
+    if (x1Active) {
+      alert('Machine is already at the Homing position (X1 active).');
       return;
     }
 
@@ -345,11 +365,12 @@ const Manual = () => {
     navigate('/');
   };
 
-  // Disabled states matching CTTM-VD logic
-  const isMovementDisabled = !connectionStatus.connected || controls.homing;
+  // Active & disabled states matching CTTM-VD logic and X1 Homing interlock
+  const isHomingActive = Boolean(controls.homing && !x1Active);
+  const isMovementDisabled = !connectionStatus.connected || isHomingActive;
   const isMotorUpDisabled = isMovementDisabled || controls.motorDown;
-  const isMotorDownDisabled = isMovementDisabled || controls.motorUp;
-  const isHomingButtonDisabled = !connectionStatus.connected || controls.homing;
+  const isMotorDownDisabled = isMovementDisabled || controls.motorUp || x1Active;
+  const isHomingButtonDisabled = !connectionStatus.connected || isHomingActive || x1Active;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 p-4 md:p-6 select-none flex flex-col justify-between">
@@ -401,6 +422,21 @@ const Manual = () => {
               <Usb className="w-4 h-4" />
               <span className="text-xs sm:text-sm font-semibold tracking-wide">
                 {connectionStatus.connected ? 'USB Connected' : 'USB Disconnected'}
+              </span>
+            </div>
+
+            {/* X1 Home Limit Sensor Badge */}
+            <div
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-xl border shadow-sm transition-colors ${
+                x1Active
+                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold'
+                  : 'bg-slate-100 text-slate-600 border-slate-200 font-medium'
+              }`}
+              title="X1 Hardware Input: Limit / Homing Sensor Status"
+            >
+              <span className={`w-2 h-2 rounded-full ${x1Active ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`}></span>
+              <span className="text-xs sm:text-sm tracking-wide">
+                X1: {x1Active ? 'AT HOME' : 'OPEN'}
               </span>
             </div>
 
@@ -476,17 +512,17 @@ const Manual = () => {
               <div className="flex items-center justify-between">
                 <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">Force</p>
                 <span className="px-2 py-0.5 text-[11px] font-bold bg-blue-50 text-blue-700 rounded-md border border-blue-200">
-                  R154 (154)
+                  R154 (32-bit Float)
                 </span>
               </div>
               <div className="mt-1 flex items-baseline space-x-2">
                 <span className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
-                  {force === '--' ? '--' : Number(force).toFixed(2)}
+                  {force === '--' ? '--' : Number(force).toFixed(3)}
                 </span>
                 <span className="text-sm font-bold text-slate-500">mN</span>
                 {force !== '--' && (
                   <span className="text-xs font-semibold text-slate-400">
-                    ({(Number(force) / 1000).toFixed(3)} N)
+                    ({(Number(force) / 1000).toFixed(6)} N)
                   </span>
                 )}
               </div>
@@ -588,8 +624,8 @@ const Manual = () => {
                   <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
                     MOTOR DOWN (M12)
                   </span>
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                    {controls.motorDown ? 'RUNNING' : 'IDLE'}
+                  <span className={`text-[11px] font-semibold uppercase tracking-wider ${x1Active ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
+                    {controls.motorDown ? 'RUNNING' : x1Active ? 'LOCKED (AT HOME)' : 'IDLE'}
                   </span>
                 </div>
               </div>
@@ -614,17 +650,23 @@ const Manual = () => {
                   )}
                 </div>
 
-                {controls.motorUp && (
+                {x1Active && (
+                  <p className="text-xs text-amber-700 mt-1.5 font-bold flex items-center justify-center gap-1.5">
+                    <span>⚠️</span>
+                    Home position reached (X1 active) — Downward movement locked. Upward movement available.
+                  </p>
+                )}
+                {!x1Active && controls.motorUp && (
                   <p className="text-xs text-slate-500 mt-1.5 font-medium">
                     Motor Down is disabled while moving Up
                   </p>
                 )}
-                {controls.motorDown && (
+                {!x1Active && controls.motorDown && (
                   <p className="text-xs text-slate-500 mt-1.5 font-medium">
                     Motor Up is disabled while moving Down
                   </p>
                 )}
-                {controls.homing && (
+                {isHomingActive && (
                   <p className="text-xs text-blue-600 mt-1.5 font-semibold">
                     Homing in progress — manual movement temporarily locked
                   </p>
@@ -670,36 +712,42 @@ const Manual = () => {
                   className={`relative w-28 h-28 sm:w-32 sm:h-32 rounded-full border-4 transition-all duration-300 shadow-xl flex items-center justify-center ${
                     isHomingButtonDisabled
                       ? 'bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed opacity-60 shadow-none'
-                      : controls.homing
+                      : isHomingActive
                       ? 'bg-blue-600 border-blue-700 text-white shadow-blue-500/50'
                       : 'bg-white border-slate-300 text-slate-700 hover:border-slate-400 hover:scale-105'
                   }`}
                 >
                   <RotateCw
                     className={`w-12 h-12 sm:w-14 sm:h-14 transition-all ${
-                      controls.homing ? 'animate-spin text-white' : 'text-slate-700'
+                      isHomingActive ? 'animate-spin text-white' : 'text-slate-700'
                     }`}
                   />
-                  {controls.homing && connectionStatus.connected && (
+                  {isHomingActive && connectionStatus.connected && (
                     <div className="absolute -inset-2 bg-blue-500 rounded-full animate-ping opacity-35 pointer-events-none"></div>
                   )}
                 </button>
                 <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
                   HOMING (M13)
                 </span>
-                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                  {controls.homing ? 'HOMING ACTIVE' : 'READY'}
+                <span className={`text-[11px] font-semibold uppercase tracking-wider ${x1Active ? 'text-emerald-600 font-bold' : 'text-slate-400'}`}>
+                  {isHomingActive ? 'HOMING ACTIVE' : x1Active ? 'AT HOME (X1)' : 'READY'}
                 </span>
               </div>
             </div>
 
             {/* Homing Instructions & Safety Note */}
             <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/60 text-center">
-              <span className={`text-sm font-bold ${controls.homing ? 'text-blue-600' : 'text-slate-700'}`}>
-                {controls.homing ? 'HOMING SEQUENCE IN PROGRESS' : 'HOMING READY'}
+              <span className={`text-sm font-bold ${isHomingActive ? 'text-blue-600' : x1Active ? 'text-emerald-600' : 'text-slate-700'}`}>
+                {isHomingActive
+                  ? 'HOMING SEQUENCE IN PROGRESS'
+                  : x1Active
+                  ? 'MACHINE ALREADY AT HOME POSITION'
+                  : 'HOMING READY'}
               </span>
               <p className="text-xs text-slate-500 mt-1 font-medium">
-                Stops all manual jogging and returns actuator to base zero position.
+                {x1Active
+                  ? 'Actuator is resting at base home switch (X1 active). Homing trigger is disabled.'
+                  : 'Stops all manual jogging and returns actuator to base zero position.'}
               </p>
             </div>
           </div>
