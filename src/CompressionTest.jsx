@@ -96,12 +96,9 @@ export default function CompressionTest() {
 
     fetchInitial();
 
-    // Turn ON Coil M30 on mount (matching Process Mode M20 pattern)
-    if (window.api && window.api.enterCompressionMode) {
-      window.api.enterCompressionMode().catch((err) => {
-        console.error('Error entering Compression Mode (M30):', err);
-      });
-    }
+    // NOTE: M30 is turned ON by the Main Menu button click before navigation.
+    // We do NOT re-trigger enterCompressionMode here to avoid toggling M30 on
+    // every React mount/re-render.
 
     let unsubTelemetry = () => {};
     let unsubConnection = () => {};
@@ -158,8 +155,9 @@ export default function CompressionTest() {
       unsubTelemetry();
       unsubConnection();
 
-      // Turn OFF Coil M30 on unmount
-      leaveCompression();
+      // NOTE: M30 is turned OFF only by the explicit back-button handler (leaveCompression).
+      // Do NOT call leaveCompression() here — React unmount fires on every
+      // navigation event, which would inadvertently kill M30.
     };
   }, []);
 

@@ -93,9 +93,9 @@ export default function ProcessMode() {
     };
 
     fetchInitial();
-    if (window.api && window.api.enterProcessMode) {
-      window.api.enterProcessMode().catch((err) => console.error('Error turning ON M20:', err));
-    }
+    // NOTE: M20 is turned ON by the Main Menu button click before navigation.
+    // We do NOT re-trigger enterProcessMode here to avoid toggling M20 on
+    // every React mount/re-render.
 
     let unsubTelemetry = () => {};
     let unsubConnection = () => {};
@@ -153,9 +153,9 @@ export default function ProcessMode() {
       unsubConnection();
       unsubProcess();
       unsubError();
-      if (window.api && window.api.leaveProcessMode) {
-        window.api.leaveProcessMode().catch((err) => console.error('Error turning OFF M20:', err));
-      }
+      // NOTE: M20 is turned OFF only by the explicit back-button / exit handler.
+      // Do NOT call leaveProcessMode() here — React unmount fires on every
+      // navigation away (including actions), which would inadvertently kill M20.
     };
   }, []);
 
@@ -519,7 +519,7 @@ export default function ProcessMode() {
 
         {/* Parameter Inputs & Live Telemetry Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
-          {/* Distance Readout Card (D2) */}
+          {/* Distance Readout Card (D52) */}
           <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-green-100 text-green-700 flex items-center justify-center">

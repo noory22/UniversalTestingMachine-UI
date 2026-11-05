@@ -48,8 +48,9 @@ let lastManualForce = 0;
 let lastX1 = false;
 
 // Process Mode Registers
-const REG_SPEED = 6054;          // DD54: Speed (mm/s) (32-bit Float LE: D54 + D55, Fatek offset 6000 + 54)
-const REG_FORCE_DIFF = 206;      // R206: Force Difference (gf) (Fatek offset 206)
+const REG_PROCESS_DISTANCE = 6052; // D52: Real-time Distance (simple 16-bit register, Fatek offset 6000 + 52)
+const REG_SPEED = 6054;            // DD54: Speed (mm/s) (32-bit Float LE: D54 + D55, Fatek offset 6000 + 54)
+const REG_FORCE_DIFF = 206;        // R206: Force Difference (gf) (Fatek offset 206)
 
 // Process Mode Master Coil
 const COIL_PROCESS_MODE = 2020;  // M20 (Fatek offset 2000 + 20)
@@ -254,16 +255,20 @@ async function processModbusLoop() {
 
       await delay(20); // 20ms inter-frame gap
 
-      // 3b. Read Distance REG_X (R10)
+      // 3b. Read Process Mode Distance: D52 (simple 16-bit register, Fatek offset 6052)
       let distance = lastDistance;
       try {
-        const respX = await modbusClient.readHoldingRegisters(10, 1);
-        if (respX && respX.data && respX.data.length > 0) {
-          distance = respX.data[0];
+        const respD52 = await modbusClient.readHoldingRegisters(REG_PROCESS_DISTANCE, 1);
+        if (respD52 && respD52.data && respD52.data.length > 0) {
+          const rawD52 = respD52.data[0];
+          // Signed 16-bit two's-complement conversion (same as D2 manual distance)
+          distance = rawD52 > 32767 ? rawD52 - 65536 : rawD52;
           lastDistance = distance;
           cycleSuccess = true;
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('[D52] Modbus read error at address', REG_PROCESS_DISTANCE, ':', e.message);
+      }
 
       await delay(20);
 
@@ -428,10 +433,8 @@ async function processModbusLoop() {
       // Record CSV row if compression test is active and tare is not running
       if (compressionRunning && !compressionTareActive && activeCompCsvStream) {
         const ts = formatTimestamp();
-        const distStr = typeof compDistance === 'number' ? compDistance.toFixed(3) : compDistance;
-        const forceStr = typeof compForce === 'number' ? compForce.toFixed(3) : compForce;
         const forceN = (compForce / 1000.0).toFixed(6);
-        const row = `${ts},${distStr},${forceStr},${forceN}\n`;
+        const row = `${ts},${compDistance},${compForce},${forceN}\n`;
         activeCompCsvStream.write(row);
       }
 
@@ -881,11 +884,11 @@ function setupIpcHandlers() {
       await modbusClient.writeCoil(COIL_TARE, false);   // M9 = false (Tare)
       await delay(25);
 
-      // Attempt to zero distance register R10 directly in PLC if writable
+      // Attempt to zero distance register D52 directly in PLC if writable
       try {
-        await modbusClient.writeRegister(10, 0);
+        await modbusClient.writeRegister(REG_PROCESS_DISTANCE, 0);
       } catch (e) {
-        // Silently continue if R10 is read-only in PLC ladder logic
+        // Silently continue if D52 is read-only in PLC ladder logic
       }
 
       lastDistance = 0;
@@ -1068,6 +1071,11 @@ function setupIpcHandlers() {
   // Process Mode M20 lifecycle
   ipcMain.handle('utm:enter-process-mode', async () => {
     processModeM20Active = true;
+    lastDistance = 0; // Reset distance cache so stale values don't persist
+    console.log('✅ Process Mode (M20) activated — D52 distance reads enabled.');
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC' };
+    }
     return await safeExecute('enter-process-mode', async () => {
       await modbusClient.writeCoil(COIL_PROCESS_MODE, true); // M20 = true
       await delay(25);
@@ -1077,6 +1085,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle('utm:leave-process-mode', async () => {
     processModeM20Active = false;
+    lastDistance = 0; // Clear cached distance when leaving process mode
+    console.log('🛑 Process Mode (M20) deactivated — D52 distance reads disabled.');
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: true };
+    }
     return await safeExecute('leave-process-mode', async () => {
       await modbusClient.writeCoil(COIL_PROCESS_MODE, false); // M20 = false
       await delay(25);
