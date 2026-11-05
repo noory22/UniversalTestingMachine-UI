@@ -64,7 +64,7 @@ const COIL_CALIBRATE = 2042;     // M42: Calibrate Mode
 const COIL_START = 2006;         // M6: Start
 const COIL_RESET = 2007;         // M7: Reset
 const COIL_STOP = 2008;          // M8: Stop
-const COIL_TARE = 2009;          // M9: Tare (Tensile M20 & Compression M30)
+const COIL_TARE = 2041;          // M9: Tare (Tensile M20 & Compression M30)
 
 // Compression Test Coils & Registers
 const COIL_COMPRESSION_MODE = 2030; // M30: Compression mode master (Fatek offset 2000 + 30)
