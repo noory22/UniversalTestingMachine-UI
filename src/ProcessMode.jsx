@@ -176,10 +176,6 @@ export default function ProcessMode() {
       setErrorMessage('Not connected to PLC!');
       return;
     }
-    if (processState.regZ !== 1) {
-      setErrorMessage('Cannot start process: REG_Z status is not ready (must be 1).');
-      return;
-    }
 
     try {
       setActionLoading(true);
@@ -390,7 +386,7 @@ export default function ProcessMode() {
     ? Number(telemetry.force).toFixed(3)
     : '0.000';
 
-  const canStart = isConnected && !isRunning && !isTearActive && isRegZReady;
+  const canStart = isConnected && !isRunning && !isTearActive;
   const canStop = isRunning;
   const canReset = isConnected;
   const canTare = isConnected && !isTearActive;
@@ -401,15 +397,12 @@ export default function ProcessMode() {
       return { text: 'DISCONNECTED', bg: 'bg-red-100 text-red-700 border-red-200' };
     }
     if (isTearActive) {
-      return { text: 'TARE ACTIVE', bg: 'bg-amber-100 text-amber-700 border-amber-200' };
+      return { text: 'TARE ACTIVE (M9)', bg: 'bg-amber-100 text-amber-700 border-amber-200' };
     }
     if (isRunning) {
-      return { text: 'TEST RUNNING', bg: 'bg-green-100 text-green-700 border-green-200 animate-pulse' };
+      return { text: 'TENSILE RUNNING (M6)', bg: 'bg-green-100 text-green-700 border-green-200 animate-pulse' };
     }
-    if (isRegZReady) {
-      return { text: 'READY', bg: 'bg-blue-100 text-blue-700 border-blue-200' };
-    }
-    return { text: 'HOMING / NOT READY', bg: 'bg-orange-100 text-orange-700 border-orange-200' };
+    return { text: 'TENSILE READY (M20)', bg: 'bg-blue-100 text-blue-700 border-blue-200' };
   };
 
   const statusBadge = getStatusBadge();
@@ -457,9 +450,14 @@ export default function ProcessMode() {
             <ArrowLeft className="w-4 h-4" />
             <span>Main Menu</span>
           </button>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-            Tensile Test
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
+              Tensile Test
+            </h1>
+            <span className="px-2 py-0.5 text-xs font-bold bg-blue-100 text-blue-800 rounded-md border border-blue-200">
+              Coil: M20
+            </span>
+          </div>
         </div>
 
         <div className="flex-1" />
@@ -562,8 +560,8 @@ export default function ProcessMode() {
                 </div>
                 <span className="text-xs font-bold text-gray-700">Speed (mm/s)</span>
               </div>
-              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
-                D54
+              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200" title="32-bit Float (DD54 = D54 + D55)">
+                DD54 (Float)
               </span>
             </div>
             <div className="flex items-center gap-2 mt-1">
@@ -590,7 +588,7 @@ export default function ProcessMode() {
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
                     : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:shadow-md'
                 }`}
-                title="Send speed to PLC register D54"
+                title="Send 32-bit Float Speed to PLC registers DD54 (D54+D55)"
               >
                 {speedLoading ? (
                   <RotateCw className="w-3.5 h-3.5 animate-spin" />
@@ -669,7 +667,7 @@ export default function ProcessMode() {
               }`}
             >
               <Scale className="w-4 h-4" />
-              <span>{isTearActive ? 'TARING...' : 'TARE'}</span>
+              <span>{isTearActive ? 'TARING (M9)...' : 'TARE (M9)'}</span>
             </button>
 
             {/* START */}
@@ -683,7 +681,7 @@ export default function ProcessMode() {
               }`}
             >
               <Play className="w-4 h-4 fill-white" />
-              <span>START</span>
+              <span>START (M6)</span>
             </button>
 
             {/* STOP */}
@@ -697,7 +695,7 @@ export default function ProcessMode() {
               }`}
             >
               <Square className="w-4 h-4 fill-white" />
-              <span>STOP</span>
+              <span>STOP (M8)</span>
             </button>
 
             {/* RESET */}
@@ -711,7 +709,7 @@ export default function ProcessMode() {
               }`}
             >
               <RotateCcw className="w-4 h-4" />
-              <span>RESET</span>
+              <span>RESET (M7)</span>
             </button>
           </div>
       </main>

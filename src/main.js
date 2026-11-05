@@ -48,21 +48,32 @@ let lastManualForce = 0;
 let lastX1 = false;
 
 // Process Mode Registers
-const REG_SPEED = 6054;          // D54: Speed (mm/s) (Fatek offset 6000 + 54)
+const REG_SPEED = 6054;          // DD54: Speed (mm/s) (32-bit Float LE: D54 + D55, Fatek offset 6000 + 54)
 const REG_FORCE_DIFF = 206;      // R206: Force Difference (gf) (Fatek offset 206)
 
 // Process Mode Master Coil
 const COIL_PROCESS_MODE = 2020;  // M20 (Fatek offset 2000 + 20)
 let processModeM20Active = false;
 
+// Settings & Calibration Coils (Fatek offset 2000 + M number)
+const COIL_NORMAL = 2040;        // M40: Normal Mode
+const COIL_CALIB_TARE = 2041;    // M41: Tare Mode
+const COIL_CALIBRATE = 2042;     // M42: Calibrate Mode
+
+// Test Action Coils (Shared between Tensile Test M20 and Compression Test M30)
+const COIL_START = 2006;         // M6: Start
+const COIL_RESET = 2007;         // M7: Reset
+const COIL_STOP = 2008;          // M8: Stop
+const COIL_TARE = 2009;          // M9: Tare (Tensile M20 & Compression M30)
+
 // Compression Test Coils & Registers
 const COIL_COMPRESSION_MODE = 2030; // M30: Compression mode master (Fatek offset 2000 + 30)
-const COIL_COMP_START = 2006;       // M6: Compression Start
-const COIL_COMP_RESET = 2007;       // M7: Compression Reset
-const COIL_COMP_STOP = 2008;        // M8: Compression Stop
-const COIL_COMP_TARE = 2009;        // M9: Compression Tare
-const REG_COMP_DISTANCE = 6102;     // D102: Real-time Distance (Fatek offset 6000 + 102)
-const REG_COMP_FORCE = 6154;        // D154: Real-time Force (Fatek offset 6000 + 154)
+const COIL_COMP_START = COIL_START; // M6: Compression Start
+const COIL_COMP_RESET = COIL_RESET; // M7: Compression Reset
+const COIL_COMP_STOP = COIL_STOP;   // M8: Compression Stop
+const COIL_COMP_TARE = COIL_TARE;   // M9: Compression Tare
+const REG_COMP_DISTANCE = 6104;     // D104 (+ D105): Real-time Distance (32-bit Float LE, Fatek offset 6000 + 104)
+// Compression Force is unified with REG_FORCE (R154: 32-bit Float LE across all modes)
 
 let compressionModeActive = false;
 let compressionRunning = false;
@@ -333,29 +344,26 @@ async function processModbusLoop() {
         } catch (e2) {}
       }
 
-      // 3h. Read Compression Mode Telemetry: D102 (Distance) & D154 (Force)
+      // 3h. Read Compression Mode Telemetry: D104 + D105 (32-bit Float LE Distance) & R154 (Force, unified)
       let compDistance = lastCompDistance;
-      let compForce = lastCompForce;
+      let compForce = force; // Real-time load cell force from R154 (32-bit Float LE)
+      lastCompForce = force;
       if (compressionModeActive) {
         await delay(20);
         try {
-          const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 1);
-          if (respCompD && respCompD.data && respCompD.data.length > 0) {
-            let rawD = respCompD.data[0];
-            compDistance = rawD > 32767 ? rawD - 65536 : rawD;
-            lastCompDistance = compDistance;
-            cycleSuccess = true;
-          }
-        } catch (e) {}
-
-        await delay(20);
-        try {
-          const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
-          if (respCompF && respCompF.data && respCompF.data.length > 0) {
-            let rawF = respCompF.data[0];
-            compForce = rawF > 32767 ? rawF - 65536 : rawF;
-            lastCompForce = compForce;
-            cycleSuccess = true;
+          const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 2);
+          if (respCompD && respCompD.data && respCompD.data.length >= 2) {
+            const d104 = respCompD.data[0]; // low word
+            const d105 = respCompD.data[1]; // high word
+            const buf = Buffer.alloc(4);
+            buf.writeUInt16LE(d104, 0);
+            buf.writeUInt16LE(d105, 2);
+            const d = buf.readFloatLE(0);
+            if (!isNaN(d)) {
+              compDistance = d;
+              lastCompDistance = compDistance;
+              cycleSuccess = true;
+            }
           }
         } catch (e) {}
       }
@@ -446,6 +454,10 @@ async function processModbusLoop() {
 // Disconnect helper
 async function disconnectModbus() {
   manualModeActive = false;
+  processModeM20Active = false;
+  compressionModeActive = false;
+  compressionRunning = false;
+  compressionTareActive = false;
   motorUpState = false;
   motorDownState = false;
   homingState = false;
@@ -453,6 +465,11 @@ async function disconnectModbus() {
   lastManualForce = 0.0;
   lastX1 = false;
   commandQueue.length = 0;
+
+  if (compressionTareTimer) {
+    clearTimeout(compressionTareTimer);
+    compressionTareTimer = null;
+  }
 
   if (tearTimer) {
     clearTimeout(tearTimer);
@@ -756,13 +773,10 @@ function setupIpcHandlers() {
     };
   });
 
-  // 6. Start Process (M3 = 2003) - Queued & Sequential
+  // 6. Start Process (M6 = 2006) - Queued & Sequential (Shared with Compression Test)
   ipcMain.handle('utm:start-process', async () => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
-    }
-    if (regZValue !== 1) {
-      return { success: false, message: 'Cannot start process: REG_Z is not 1!' };
     }
 
     const logResult = startProcessLogging();
@@ -775,14 +789,13 @@ function setupIpcHandlers() {
       lastDistance = 0;
       lastForce = 0.0;
 
-      // Sequential coil writes with 25ms inter-frame gap matching Python main.py
-      await modbusClient.writeCoil(2003, true);   // COIL_START (M3)
+      await modbusClient.writeCoil(COIL_START, true);   // M6 = true (Start)
       await delay(25);
-      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await modbusClient.writeCoil(COIL_STOP, false);   // M8 = false (Stop)
       await delay(25);
-      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await modbusClient.writeCoil(COIL_RESET, false);  // M7 = false (Reset)
       await delay(25);
-      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await modbusClient.writeCoil(COIL_TARE, false);   // M9 = false (Tare)
       await delay(25);
 
       processRunning = true;
@@ -804,7 +817,7 @@ function setupIpcHandlers() {
     });
   });
 
-  // 7. Stop Process (M6 = 2006) - Queued & Sequential
+  // 7. Stop Process (M8 = 2008) - Queued & Sequential (Shared with Compression Test)
   ipcMain.handle('utm:stop-process', async () => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       processRunning = false;
@@ -814,24 +827,24 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('stop-process', async () => {
-      await modbusClient.writeCoil(2006, true);   // COIL_STOP (M6)
+      await modbusClient.writeCoil(COIL_STOP, true);    // M8 = true (Stop)
       await delay(25);
-      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await modbusClient.writeCoil(COIL_START, false);  // M6 = false (Start)
       await delay(25);
-      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await modbusClient.writeCoil(COIL_RESET, false);  // M7 = false (Reset)
       await delay(25);
-      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await modbusClient.writeCoil(COIL_TARE, false);   // M9 = false (Tare)
       await delay(25);
 
       processRunning = false;
       await stopProcessLogging();
       sendProcessState();
 
-      return {};
+      return { success: true };
     });
   });
 
-  // 8. Reset Process (M4 = 2004) - Queued & Sequential
+  // 8. Reset Process (M7 = 2007) - Queued & Sequential (Shared with Compression Test)
   ipcMain.handle('utm:reset-process', async () => {
     if (processRunning) {
       processRunning = false;
@@ -857,13 +870,13 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('reset-process', async () => {
-      await modbusClient.writeCoil(2004, true);   // COIL_RESET (M4)
+      await modbusClient.writeCoil(COIL_RESET, true);   // M7 = true (Reset)
       await delay(25);
-      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await modbusClient.writeCoil(COIL_START, false);  // M6 = false (Start)
       await delay(25);
-      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await modbusClient.writeCoil(COIL_STOP, false);   // M8 = false (Stop)
       await delay(25);
-      await modbusClient.writeCoil(2007, false);  // COIL_TEAR (M7)
+      await modbusClient.writeCoil(COIL_TARE, false);   // M9 = false (Tare)
       await delay(25);
 
       // Attempt to zero distance register R10 directly in PLC if writable
@@ -886,11 +899,11 @@ function setupIpcHandlers() {
         tearActive: false,
       });
 
-      return {};
+      return { success: true };
     });
   });
 
-  // 9. Tare (M7 = 2007) - 1 second timed pulse, Queued
+  // 9. Tare (M9 = 2009) - 1 second timed pulse, Queued (Shared with Compression Test)
   ipcMain.handle('utm:activate-tare', async () => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
@@ -900,13 +913,13 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('activate-tare', async () => {
-      await modbusClient.writeCoil(2007, true);   // COIL_TEAR (M7)
+      await modbusClient.writeCoil(COIL_TARE, true);    // M9 = true (Tare)
       await delay(25);
-      await modbusClient.writeCoil(2003, false);  // COIL_START (M3)
+      await modbusClient.writeCoil(COIL_START, false);  // M6 = false (Start)
       await delay(25);
-      await modbusClient.writeCoil(2006, false);  // COIL_STOP (M6)
+      await modbusClient.writeCoil(COIL_STOP, false);   // M8 = false (Stop)
       await delay(25);
-      await modbusClient.writeCoil(2004, false);  // COIL_RESET (M4)
+      await modbusClient.writeCoil(COIL_RESET, false);  // M7 = false (Reset)
       await delay(25);
 
       tearActive = true;
@@ -918,7 +931,7 @@ function setupIpcHandlers() {
         safeExecute('deactivate-tare', async () => {
           try {
             if (modbusClient && isConnected && modbusClient.isOpen) {
-              await modbusClient.writeCoil(2007, false);
+              await modbusClient.writeCoil(COIL_TARE, false); // M9 = false
             }
           } catch (e) {
             console.error('Error turning off tare coil:', e);
@@ -930,18 +943,18 @@ function setupIpcHandlers() {
         });
       }, 1000);
 
-      return {};
+      return { success: true };
     });
   });
 
-  // 10. Activate Normal Mode (M100 = 2100) - 1 second timed pulse, Queued
+  // 10. Activate Normal Mode (M40 = 2040) - 1 second timed pulse, Queued
   ipcMain.handle('utm:activate-normal', async () => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
     }
 
     return await safeExecute('activate-normal', async () => {
-      await modbusClient.writeCoil(2100, true);
+      await modbusClient.writeCoil(COIL_NORMAL, true);
       await delay(25);
 
       if (normalTimer) clearTimeout(normalTimer);
@@ -949,7 +962,7 @@ function setupIpcHandlers() {
         safeExecute('deactivate-normal', async () => {
           try {
             if (modbusClient && isConnected && modbusClient.isOpen) {
-              await modbusClient.writeCoil(2100, false);
+              await modbusClient.writeCoil(COIL_NORMAL, false);
             }
           } catch (e) {}
           return {};
@@ -960,7 +973,7 @@ function setupIpcHandlers() {
     });
   });
 
-  // 11. Set Calibrate Mode (tare: M101=2101, calibrate: M102=2102) - Queued
+  // 11. Set Calibrate Mode (tare: M41=2041, calibrate: M42=2042) - Queued
   ipcMain.handle('utm:set-calibrate-mode', async (_event, mode) => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC!' };
@@ -968,7 +981,7 @@ function setupIpcHandlers() {
 
     return await safeExecute(`set-calibrate-mode-${mode}`, async () => {
       if (mode === 'tare') {
-        await modbusClient.writeCoil(2101, true);
+        await modbusClient.writeCoil(COIL_CALIB_TARE, true);
         await delay(25);
 
         if (tareTimer) clearTimeout(tareTimer);
@@ -976,14 +989,14 @@ function setupIpcHandlers() {
           safeExecute('deactivate-tare-s', async () => {
             try {
               if (modbusClient && isConnected && modbusClient.isOpen) {
-                await modbusClient.writeCoil(2101, false);
+                await modbusClient.writeCoil(COIL_CALIB_TARE, false);
               }
             } catch (e) {}
             return {};
           });
         }, 1000);
       } else if (mode === 'calibrate') {
-        await modbusClient.writeCoil(2102, true);
+        await modbusClient.writeCoil(COIL_CALIBRATE, true);
         await delay(25);
       }
       return {};
@@ -1008,7 +1021,7 @@ function setupIpcHandlers() {
     });
   });
 
-  // 12b. Send Speed Parameter (D54 = 6054) - Queued
+  // 12b. Send Speed Parameter: DD54 (32-bit Float LE at Modbus 6054) - Queued
   ipcMain.handle('utm:send-speed', async (_event, value) => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC or error writing register.' };
@@ -1020,11 +1033,14 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('send-speed', async () => {
-      // In Fatek PLC, D54 is holding register 6054 (D0=6000)
-      const regVal = Math.round(numVal);
-      await modbusClient.writeRegister(REG_SPEED, regVal);
+      // In Fatek PLC, DD54 is a 32-bit Float LE (D54 + D55) at holding registers 6054 + 6055
+      const buf = Buffer.alloc(4);
+      buf.writeFloatLE(numVal, 0);
+      const lowWord = buf.readUInt16LE(0);   // D54 (6054)
+      const highWord = buf.readUInt16LE(2);  // D55 (6055)
+      await modbusClient.writeRegisters(REG_SPEED, [lowWord, highWord]);
       await delay(25);
-      return { success: true, message: `Speed ${numVal} mm/s written to register D54!` };
+      return { success: true, message: `Speed ${numVal} mm/s written to DD54 (32-bit Float LE)!` };
     });
   });
 
@@ -1066,21 +1082,13 @@ function setupIpcHandlers() {
     });
   });
 
-  // Compression Test Handlers
+  // Compression Test Handlers (M30 lifecycle matching M20 Process Mode)
   ipcMain.handle('compression:enter', async () => {
     compressionModeActive = true;
     compressionRunning = false;
     compressionTareActive = false;
     return await safeExecute('compression-enter', async () => {
       await modbusClient.writeCoil(COIL_COMPRESSION_MODE, true); // M30 = true
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_START, false);      // M6 = false
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_STOP, false);       // M8 = false
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_RESET, false);      // M7 = false
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_TARE, false);       // M9 = false
       await delay(25);
       return { success: true, m30: true };
     });
@@ -1098,12 +1106,6 @@ function setupIpcHandlers() {
 
     return await safeExecute('compression-leave', async () => {
       await modbusClient.writeCoil(COIL_COMPRESSION_MODE, false); // M30 = false
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_START, false);       // M6 = false
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_STOP, true);         // M8 = true
-      await delay(25);
-      await modbusClient.writeCoil(COIL_COMP_TARE, false);        // M9 = false
       await delay(25);
       return { success: true, m30: false };
     });

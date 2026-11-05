@@ -54,17 +54,30 @@ export default function CompressionTest() {
   const chartRef = useRef(null);
   const runningRef = useRef(testRunning);
   const tareRef = useRef(tareActive);
+  const hasLeftRef = useRef(false);
 
   useEffect(() => {
     runningRef.current = testRunning;
     tareRef.current = tareActive;
   }, [testRunning, tareActive]);
 
-  // Lifecycle: Turn ON M30 on mount, turn OFF on unmount
+  const leaveCompression = () => {
+    if (!hasLeftRef.current) {
+      hasLeftRef.current = true;
+      if (window.api && window.api.leaveCompressionMode) {
+        window.api.leaveCompressionMode().catch((err) => {
+          console.error('Error leaving Compression Mode (M30):', err);
+        });
+      }
+    }
+  };
+
+  // Lifecycle: Turn ON M30 on mount, turn OFF on unmount (matching M20 Process Mode)
   useEffect(() => {
     let isMounted = true;
+    hasLeftRef.current = false;
 
-    const initCompression = async () => {
+    const fetchInitial = async () => {
       try {
         if (window.api && window.api.getConnectionStatus) {
           const status = await window.api.getConnectionStatus();
@@ -76,16 +89,19 @@ export default function CompressionTest() {
             });
           }
         }
-        // Turn ON Coil M30
-        if (window.api && window.api.enterCompressionMode) {
-          await window.api.enterCompressionMode();
-        }
       } catch (err) {
-        console.error('Error entering Compression Mode (M30):', err);
+        console.error('Error fetching initial status in Compression Test:', err);
       }
     };
 
-    initCompression();
+    fetchInitial();
+
+    // Turn ON Coil M30 on mount (matching Process Mode M20 pattern)
+    if (window.api && window.api.enterCompressionMode) {
+      window.api.enterCompressionMode().catch((err) => {
+        console.error('Error entering Compression Mode (M30):', err);
+      });
+    }
 
     let unsubTelemetry = () => {};
     let unsubConnection = () => {};
@@ -95,9 +111,10 @@ export default function CompressionTest() {
         unsubTelemetry = window.api.onTelemetry((data) => {
           if (!isMounted || !data) return;
 
+          const liveForce = data.compForce !== undefined ? data.compForce : (data.force !== undefined ? data.force : 0);
           setTelemetry({
             compDistance: data.compDistance !== undefined ? data.compDistance : 0,
-            compForce: data.compForce !== undefined ? data.compForce : 0,
+            compForce: liveForce,
           });
 
           if (data.compressionRunning !== undefined) {
@@ -110,9 +127,9 @@ export default function CompressionTest() {
           // Accumulate curve points when test is running and not taring
           const isRun = data.compressionRunning !== undefined ? data.compressionRunning : runningRef.current;
           const isTare = data.compressionTareActive !== undefined ? data.compressionTareActive : tareRef.current;
-          if (isRun && !isTare && data.compDistance !== undefined && data.compForce !== undefined) {
+          if (isRun && !isTare && data.compDistance !== undefined) {
             setDataPoints((prev) => {
-              const next = [...prev, { distance: data.compDistance, force: data.compForce }];
+              const next = [...prev, { distance: data.compDistance, force: liveForce }];
               return next.length > 1500 ? next.slice(-1500) : next;
             });
           }
@@ -142,11 +159,7 @@ export default function CompressionTest() {
       unsubConnection();
 
       // Turn OFF Coil M30 on unmount
-      if (window.api && window.api.leaveCompressionMode) {
-        window.api.leaveCompressionMode().catch((err) => {
-          console.error('Error leaving Compression Mode (M30):', err);
-        });
-      }
+      leaveCompression();
     };
   }, []);
 
@@ -241,18 +254,14 @@ export default function CompressionTest() {
   };
 
   const handleBack = () => {
-    if (window.api && window.api.leaveCompressionMode) {
-      window.api.leaveCompressionMode().catch(() => {});
-    }
+    leaveCompression();
     navigate('/');
   };
 
   const handleExit = () => {
     const confirmed = window.confirm('Are you sure you want to exit?');
     if (confirmed) {
-      if (window.api && window.api.leaveCompressionMode) {
-        window.api.leaveCompressionMode().catch(() => {});
-      }
+      leaveCompression();
       if (window.api && window.api.closeApp) {
         window.api.closeApp();
       } else {
@@ -287,7 +296,7 @@ export default function CompressionTest() {
         type: 'linear',
         title: {
           display: true,
-          text: 'Distance (mm) [D102]',
+          text: 'Distance (mm) [D104]',
           font: { weight: 'bold', size: 12 },
           color: '#475569',
         },
@@ -297,7 +306,7 @@ export default function CompressionTest() {
         type: 'linear',
         title: {
           display: true,
-          text: 'Force (mN) [D154]',
+          text: 'Force (mN) [R154]',
           font: { weight: 'bold', size: 12 },
           color: '#475569',
         },
@@ -328,8 +337,8 @@ export default function CompressionTest() {
     : isRunning && dataPoints.length === 0
     ? 'Reading...'
     : telemetry?.compForce !== undefined
-    ? Number(telemetry.compForce).toFixed(2)
-    : '0.00';
+    ? Number(telemetry.compForce).toFixed(3)
+    : '0.000';
 
   const canStart = isConnected && !isRunning && !isTearActive;
   const canStop = isRunning;
@@ -494,7 +503,7 @@ export default function CompressionTest() {
               </div>
             </div>
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
-              D154 (6154)
+              R154
             </span>
           </div>
 

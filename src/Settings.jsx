@@ -13,9 +13,9 @@ import {
 } from 'lucide-react';
 
 const CALIBRATION_MODES = [
-  { id: 'normal', label: 'Normal', coil: 'M100', description: 'Default normal operating mode' },
-  { id: 'tare', label: 'Tare', coil: 'M101', description: 'Zero / Tare the load cell sensor' },
-  { id: 'calibrate', label: 'Calibrate', coil: 'M102', description: 'Calibrate load cell register' },
+  { id: 'normal', label: 'Normal', coil: 'M40', description: 'Default normal operating mode' },
+  { id: 'tare', label: 'Tare', coil: 'M41', description: 'Zero / Tare the load cell sensor' },
+  { id: 'calibrate', label: 'Calibrate', coil: 'M42', description: 'Calibrate load cell register' },
 ];
 
 export default function Settings() {
@@ -312,7 +312,7 @@ export default function Settings() {
                 </div>
               </div>
 
-              {/* Mode Selection (M100, M101, M102) */}
+              {/* Mode Selection (M40, M41, M42) */}
               <div className="space-y-3 pt-2">
                 <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
                   <Binary className="w-4 h-4 text-slate-400" />
