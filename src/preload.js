@@ -10,6 +10,19 @@ contextBridge.exposeInMainWorld('api', {
   reconnect: () => ipcRenderer.invoke('com:reconnect'),
 
   // Process Controls (UTM)
+  enterProcessMode: () => ipcRenderer.invoke('utm:enter-process-mode'),
+  leaveProcessMode: () => ipcRenderer.invoke('utm:leave-process-mode'),
+
+  // Compression Test Controls
+  enterCompressionMode: () => ipcRenderer.invoke('compression:enter'),
+  leaveCompressionMode: () => ipcRenderer.invoke('compression:leave'),
+  startCompressionTest: () => ipcRenderer.invoke('compression:start'),
+  stopCompressionTest: () => ipcRenderer.invoke('compression:stop'),
+  resetCompressionTest: () => ipcRenderer.invoke('compression:reset'),
+  tareCompressionTest: () => ipcRenderer.invoke('compression:tare'),
+
+  sendSpeed: (value) => ipcRenderer.invoke('utm:send-speed', value),
+  sendForceDiff: (value) => ipcRenderer.invoke('utm:send-force-diff', value),
   startProcess: () => ipcRenderer.invoke('utm:start-process'),
   stopProcess: () => ipcRenderer.invoke('utm:stop-process'),
   resetProcess: () => ipcRenderer.invoke('utm:reset-process'),

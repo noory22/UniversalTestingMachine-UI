@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Power, Usb, Sliders, PlayCircle, FileText, Activity } from 'lucide-react';
+import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers } from 'lucide-react';
 
 const MainMenu = () => {
   const [selectedOption, setSelectedOption] = useState(null);
@@ -71,11 +71,19 @@ const MainMenu = () => {
   const menuOptions = [
     {
       id: 'process-mode',
-      title: 'Process Mode',
+      title: 'Tensile Test',
       icon: <PlayCircle className="w-8 h-8" />,
       description: 'Execute mechanical testing, view real-time curves, and control machine states',
       gradient: 'from-blue-500 to-cyan-500',
       path: '/process-mode',
+    },
+    {
+      id: 'compression-test',
+      title: 'Compression Test',
+      icon: <Layers className="w-8 h-8" />,
+      description: 'Execute compression testing, monitor D102/D154 registers, and view force vs. distance curves',
+      gradient: 'from-purple-500 to-indigo-600',
+      path: '/compression-test',
     },
     {
       id: 'manual-mode',
@@ -180,6 +188,12 @@ const MainMenu = () => {
                       setSelectedOption(option.id);
                       if (option.id === 'manual-mode' && window.api && window.api.manual) {
                         window.api.manual().catch((err) => console.error('Manual mode activate error:', err));
+                      }
+                      if (option.id === 'process-mode' && window.api && window.api.enterProcessMode) {
+                        window.api.enterProcessMode().catch((err) => console.error('Process mode activate error:', err));
+                      }
+                      if (option.id === 'compression-test' && window.api && window.api.enterCompressionMode) {
+                        window.api.enterCompressionMode().catch((err) => console.error('Compression mode activate error:', err));
                       }
                       navigate(option.path);
                     }}

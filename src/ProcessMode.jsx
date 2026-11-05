@@ -25,6 +25,11 @@ import {
   Activity,
   AlertCircle,
   X,
+  Send,
+  Check,
+  FastForward,
+  Sliders,
+  RotateCw,
 } from 'lucide-react';
 
 ChartJS.register(
@@ -50,6 +55,14 @@ export default function ProcessMode() {
   const [errorMessage, setErrorMessage] = useState('');
   const [activeTab, setActiveTab] = useState('chart'); // 'chart' | 'table'
 
+  // Process parameter inputs (Speed: D54, Force Difference: R206)
+  const [speedInput, setSpeedInput] = useState('');
+  const [forceDiffInput, setForceDiffInput] = useState('');
+  const [speedLoading, setSpeedLoading] = useState(false);
+  const [forceDiffLoading, setForceDiffLoading] = useState(false);
+  const [speedStatus, setSpeedStatus] = useState(null);
+  const [forceDiffStatus, setForceDiffStatus] = useState(null);
+
   const chartRef = useRef(null);
   const processStateRef = useRef(processState);
 
@@ -57,7 +70,7 @@ export default function ProcessMode() {
     processStateRef.current = processState;
   }, [processState]);
 
-  // Initialize and register event listeners
+  // Initialize and register event listeners (Turn ON M20 on mount, turn OFF on unmount)
   useEffect(() => {
     const fetchInitial = async () => {
       try {
@@ -80,6 +93,9 @@ export default function ProcessMode() {
     };
 
     fetchInitial();
+    if (window.api && window.api.enterProcessMode) {
+      window.api.enterProcessMode().catch((err) => console.error('Error turning ON M20:', err));
+    }
 
     let unsubTelemetry = () => {};
     let unsubConnection = () => {};
@@ -137,6 +153,9 @@ export default function ProcessMode() {
       unsubConnection();
       unsubProcess();
       unsubError();
+      if (window.api && window.api.leaveProcessMode) {
+        window.api.leaveProcessMode().catch((err) => console.error('Error turning OFF M20:', err));
+      }
     };
   }, []);
 
@@ -225,8 +244,71 @@ export default function ProcessMode() {
     }
   };
 
+  const handleSendSpeed = async () => {
+    if (!connectionStatus.connected) {
+      setErrorMessage('Not connected to PLC!');
+      return;
+    }
+    const val = parseFloat(speedInput);
+    if (isNaN(val) || val <= 0) {
+      setErrorMessage('Please enter a valid positive number for Speed (mm/s).');
+      return;
+    }
+
+    setSpeedLoading(true);
+    setSpeedStatus(null);
+    try {
+      if (window.api && window.api.sendSpeed) {
+        const res = await window.api.sendSpeed(val);
+        if (res && res.success) {
+          setSpeedStatus({ success: true, msg: 'Sent!' });
+          setTimeout(() => setSpeedStatus(null), 2500);
+        } else {
+          setErrorMessage((res && res.message) || 'Failed to write Speed to PLC (D54)');
+        }
+      }
+    } catch (err) {
+      setErrorMessage(err.message || 'Error sending Speed to PLC');
+    } finally {
+      setSpeedLoading(false);
+    }
+  };
+
+  const handleSendForceDiff = async () => {
+    if (!connectionStatus.connected) {
+      setErrorMessage('Not connected to PLC!');
+      return;
+    }
+    const val = parseInt(forceDiffInput, 10);
+    if (isNaN(val) || val <= 0) {
+      setErrorMessage('Please enter a valid positive integer for Force Difference (gf).');
+      return;
+    }
+
+    setForceDiffLoading(true);
+    setForceDiffStatus(null);
+    try {
+      if (window.api && window.api.sendForceDiff) {
+        const res = await window.api.sendForceDiff(val);
+        if (res && res.success) {
+          setForceDiffStatus({ success: true, msg: 'Sent!' });
+          setTimeout(() => setForceDiffStatus(null), 2500);
+        } else {
+          setErrorMessage((res && res.message) || 'Failed to write Force Difference to PLC (R206)');
+        }
+      }
+    } catch (err) {
+      setErrorMessage(err.message || 'Error sending Force Difference to PLC');
+    } finally {
+      setForceDiffLoading(false);
+    }
+  };
+
   const handleExit = () => {
     const confirmed = window.confirm('Are you sure you want to exit?');
+    if (confirmed && window.api && window.api.leaveProcessMode) {
+      window.api.leaveProcessMode().catch(() => {});
+    }
     if (confirmed) {
       if (window.api && window.api.closeApp) {
         window.api.closeApp();
@@ -364,14 +446,19 @@ export default function ProcessMode() {
       <header className="flex items-center px-6 py-3.5 bg-white/80 backdrop-blur-lg shadow-md border-b border-gray-200/50 relative z-10 shrink-0">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => {
+              if (window.api && window.api.leaveProcessMode) {
+                window.api.leaveProcessMode().catch(() => {});
+              }
+              navigate('/');
+            }}
             className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-semibold text-gray-700 bg-white/80 hover:bg-white border border-gray-200 rounded-xl transition-all shadow-xs hover:shadow-sm cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Main Menu</span>
           </button>
           <h1 className="text-2xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-            Process Mode
+            Tensile Test
           </h1>
         </div>
 
@@ -432,10 +519,10 @@ export default function ProcessMode() {
           </div>
         </div>
 
-        {/* Telemetry and Controls Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center shrink-0">
-          {/* Distance Readout Card */}
-          <div className="lg:col-span-3 bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-4 shadow-lg flex items-center justify-between">
+        {/* Parameter Inputs & Live Telemetry Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
+          {/* Distance Readout Card (D2) */}
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-green-100 text-green-700 flex items-center justify-center">
                 <Ruler className="w-5 h-5" />
@@ -451,7 +538,7 @@ export default function ProcessMode() {
           </div>
 
           {/* Force Readout Card */}
-          <div className="lg:col-span-3 bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-4 shadow-lg flex items-center justify-between">
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
                 <Gauge className="w-5 h-5" />
@@ -466,8 +553,111 @@ export default function ProcessMode() {
             </div>
           </div>
 
-          {/* Controls Bar */}
-          <div className="lg:col-span-6 grid grid-cols-4 gap-3">
+          {/* Speed Input Card (D54) */}
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                  <FastForward className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-xs font-bold text-gray-700">Speed (mm/s)</span>
+              </div>
+              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
+                D54
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <input
+                type="number"
+                step="any"
+                min="0"
+                placeholder="Range: 1–10"
+                value={speedInput}
+                onChange={(e) => setSpeedInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSendSpeed();
+                }}
+                disabled={isRunning || !isConnected || speedLoading}
+                className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-400"
+              />
+              <button
+                onClick={handleSendSpeed}
+                disabled={isRunning || !isConnected || speedLoading || !speedInput.trim()}
+                className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-sm transition-all cursor-pointer ${
+                  speedStatus?.success
+                    ? 'bg-emerald-600 text-white'
+                    : isRunning || !isConnected || !speedInput.trim()
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:shadow-md'
+                }`}
+                title="Send speed to PLC register D54"
+              >
+                {speedLoading ? (
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                ) : speedStatus?.success ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>{speedStatus?.success ? 'Sent' : 'Send'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Force Difference Input Card (R206) */}
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <div className="w-6 h-6 rounded-lg bg-cyan-100 text-cyan-700 flex items-center justify-center">
+                  <Sliders className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-xs font-bold text-gray-700">Force Diff (gf)</span>
+              </div>
+              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-cyan-50 text-cyan-700 rounded border border-cyan-200">
+                R206
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <input
+                type="number"
+                step="1"
+                min="0"
+                placeholder="Range: 10–10000"
+                value={forceDiffInput}
+                onChange={(e) => setForceDiffInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSendForceDiff();
+                }}
+                disabled={isRunning || !isConnected || forceDiffLoading}
+                className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-400"
+              />
+              <button
+                onClick={handleSendForceDiff}
+                disabled={isRunning || !isConnected || forceDiffLoading || !forceDiffInput.trim()}
+                className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-sm transition-all cursor-pointer ${
+                  forceDiffStatus?.success
+                    ? 'bg-emerald-600 text-white'
+                    : isRunning || !isConnected || !forceDiffInput.trim()
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
+                    : 'bg-cyan-600 hover:bg-cyan-700 text-white hover:shadow-md'
+                }`}
+                title="Send force difference to PLC register R206"
+              >
+                {forceDiffLoading ? (
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                ) : forceDiffStatus?.success ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>{forceDiffStatus?.success ? 'Sent' : 'Send'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Process Control Action Buttons */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 shrink-0">
             {/* TARE */}
             <button
               onClick={handleTare}
@@ -524,7 +714,6 @@ export default function ProcessMode() {
               <span>RESET</span>
             </button>
           </div>
-        </div>
       </main>
     </div>
   );

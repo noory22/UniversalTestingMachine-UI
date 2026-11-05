@@ -47,6 +47,32 @@ let lastManualDistance = 0;
 let lastManualForce = 0;
 let lastX1 = false;
 
+// Process Mode Registers
+const REG_SPEED = 6054;          // D54: Speed (mm/s) (Fatek offset 6000 + 54)
+const REG_FORCE_DIFF = 206;      // R206: Force Difference (gf) (Fatek offset 206)
+
+// Process Mode Master Coil
+const COIL_PROCESS_MODE = 2020;  // M20 (Fatek offset 2000 + 20)
+let processModeM20Active = false;
+
+// Compression Test Coils & Registers
+const COIL_COMPRESSION_MODE = 2030; // M30: Compression mode master (Fatek offset 2000 + 30)
+const COIL_COMP_START = 2006;       // M6: Compression Start
+const COIL_COMP_RESET = 2007;       // M7: Compression Reset
+const COIL_COMP_STOP = 2008;        // M8: Compression Stop
+const COIL_COMP_TARE = 2009;        // M9: Compression Tare
+const REG_COMP_DISTANCE = 6102;     // D102: Real-time Distance (Fatek offset 6000 + 102)
+const REG_COMP_FORCE = 6154;        // D154: Real-time Force (Fatek offset 6000 + 154)
+
+let compressionModeActive = false;
+let compressionRunning = false;
+let compressionTareActive = false;
+let compressionTareTimer = null;
+let lastCompDistance = 0;
+let lastCompForce = 0;
+let activeCompCsvStream = null;
+let activeCompCsvPath = null;
+
 // Synchronized Command Queue (Eliminates half-duplex serial collisions)
 const commandQueue = [];
 
@@ -307,6 +333,33 @@ async function processModbusLoop() {
         } catch (e2) {}
       }
 
+      // 3h. Read Compression Mode Telemetry: D102 (Distance) & D154 (Force)
+      let compDistance = lastCompDistance;
+      let compForce = lastCompForce;
+      if (compressionModeActive) {
+        await delay(20);
+        try {
+          const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 1);
+          if (respCompD && respCompD.data && respCompD.data.length > 0) {
+            let rawD = respCompD.data[0];
+            compDistance = rawD > 32767 ? rawD - 65536 : rawD;
+            lastCompDistance = compDistance;
+            cycleSuccess = true;
+          }
+        } catch (e) {}
+
+        await delay(20);
+        try {
+          const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
+          if (respCompF && respCompF.data && respCompF.data.length > 0) {
+            let rawF = respCompF.data[0];
+            compForce = rawF > 32767 ? rawF - 65536 : rawF;
+            lastCompForce = compForce;
+            cycleSuccess = true;
+          }
+        } catch (e) {}
+      }
+
       // Safety Guard: If machine reaches X1 home limit while moving down, halt Motor Down (M12)
       if (x1 && motorDownState) {
         console.warn('⚠️ X1 limit switch active while moving Down! Automatically halting Motor Down (M12).');
@@ -355,9 +408,23 @@ async function processModbusLoop() {
         homing: homingState && !lastX1,
         x1: lastX1,
         atHome: lastX1,
+        processModeM20Active,
+        compDistance,
+        compForce,
+        compressionModeActive,
+        compressionRunning,
+        compressionTareActive,
       });
 
       // Record CSV row if process is active and tare is not running
+      // Record CSV row if compression test is active and tare is not running
+      if (compressionRunning && !compressionTareActive && activeCompCsvStream) {
+        const ts = formatTimestamp();
+        const forceN = (compForce / 1000.0).toFixed(6);
+        const row = `${ts},${compDistance},${compForce},${forceN}\n`;
+        activeCompCsvStream.write(row);
+      }
+
       if (processRunning && !tearActive && activeCsvStream) {
         const ts = formatTimestamp();
         const forceN = (force / 1000.0).toFixed(6);
@@ -492,6 +559,35 @@ async function autoConnectPort() {
   } catch (err) {
     console.error('Auto-connect error:', err);
     return { success: false, message: err.message };
+  }
+}
+
+// Compression test logging helpers
+function startCompressionLogging() {
+  try {
+    if (!logsDir) initLogsDirectory();
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const filename = `compression_data_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`;
+    activeCompCsvPath = path.join(logsDir, filename);
+
+    activeCompCsvStream = fs.createWriteStream(activeCompCsvPath, { flags: 'w' });
+    activeCompCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    console.log(`[CSV] Started compression logging to ${activeCompCsvPath}`);
+    return { success: true, filename };
+  } catch (err) {
+    console.error('[CSV] Failed to start compression log file:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+async function stopCompressionLogging() {
+  if (activeCompCsvStream) {
+    await new Promise((resolve) => activeCompCsvStream.end(resolve));
+    console.log(`[CSV] Closed compression log ${activeCompCsvPath}`);
+    activeCompCsvStream = null;
+    activeCompCsvPath = null;
   }
 }
 
@@ -909,6 +1005,201 @@ function setupIpcHandlers() {
       await modbusClient.writeRegister(102, intVal);
       await delay(25);
       return { message: `Weight parameter ${intVal} sent to register R102!` };
+    });
+  });
+
+  // 12b. Send Speed Parameter (D54 = 6054) - Queued
+  ipcMain.handle('utm:send-speed', async (_event, value) => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC or error writing register.' };
+    }
+
+    const numVal = parseFloat(value);
+    if (isNaN(numVal) || numVal <= 0) {
+      return { success: false, message: 'Speed must be a valid positive number.' };
+    }
+
+    return await safeExecute('send-speed', async () => {
+      // In Fatek PLC, D54 is holding register 6054 (D0=6000)
+      const regVal = Math.round(numVal);
+      await modbusClient.writeRegister(REG_SPEED, regVal);
+      await delay(25);
+      return { success: true, message: `Speed ${numVal} mm/s written to register D54!` };
+    });
+  });
+
+  // 12c. Send Force Difference Parameter (R206 = 206) - Queued
+  ipcMain.handle('utm:send-force-diff', async (_event, value) => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC or error writing register.' };
+    }
+
+    const intVal = parseInt(value, 10);
+    if (isNaN(intVal) || intVal <= 0) {
+      return { success: false, message: 'Force difference must be a valid positive integer.' };
+    }
+
+    return await safeExecute('send-force-diff', async () => {
+      // In Fatek PLC, R206 is holding register 206 (R0=0)
+      await modbusClient.writeRegister(REG_FORCE_DIFF, intVal);
+      await delay(25);
+      return { success: true, message: `Force difference ${intVal} gf written to register R206!` };
+    });
+  });
+
+  // Process Mode M20 lifecycle
+  ipcMain.handle('utm:enter-process-mode', async () => {
+    processModeM20Active = true;
+    return await safeExecute('enter-process-mode', async () => {
+      await modbusClient.writeCoil(COIL_PROCESS_MODE, true); // M20 = true
+      await delay(25);
+      return { success: true, m20: true };
+    });
+  });
+
+  ipcMain.handle('utm:leave-process-mode', async () => {
+    processModeM20Active = false;
+    return await safeExecute('leave-process-mode', async () => {
+      await modbusClient.writeCoil(COIL_PROCESS_MODE, false); // M20 = false
+      await delay(25);
+      return { success: true, m20: false };
+    });
+  });
+
+  // Compression Test Handlers
+  ipcMain.handle('compression:enter', async () => {
+    compressionModeActive = true;
+    compressionRunning = false;
+    compressionTareActive = false;
+    return await safeExecute('compression-enter', async () => {
+      await modbusClient.writeCoil(COIL_COMPRESSION_MODE, true); // M30 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_START, false);      // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_STOP, false);       // M8 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_RESET, false);      // M7 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_TARE, false);       // M9 = false
+      await delay(25);
+      return { success: true, m30: true };
+    });
+  });
+
+  ipcMain.handle('compression:leave', async () => {
+    compressionModeActive = false;
+    compressionRunning = false;
+    compressionTareActive = false;
+    if (compressionTareTimer) {
+      clearTimeout(compressionTareTimer);
+      compressionTareTimer = null;
+    }
+    await stopCompressionLogging();
+
+    return await safeExecute('compression-leave', async () => {
+      await modbusClient.writeCoil(COIL_COMPRESSION_MODE, false); // M30 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_START, false);       // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_STOP, true);         // M8 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_TARE, false);        // M9 = false
+      await delay(25);
+      return { success: true, m30: false };
+    });
+  });
+
+  ipcMain.handle('compression:start', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    const logResult = startCompressionLogging();
+    if (!logResult.success) {
+      return { success: false, message: logResult.error };
+    }
+
+    return await safeExecute('compression-start', async () => {
+      await modbusClient.writeCoil(COIL_COMP_START, true);  // M6 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_STOP, false);  // M8 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_RESET, false); // M7 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_TARE, false);  // M9 = false
+      await delay(25);
+      compressionRunning = true;
+      return { success: true, running: true };
+    });
+  });
+
+  ipcMain.handle('compression:stop', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    return await safeExecute('compression-stop', async () => {
+      await modbusClient.writeCoil(COIL_COMP_STOP, true);   // M8 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_START, false);  // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_RESET, false);  // M7 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_TARE, false);   // M9 = false
+      await delay(25);
+      compressionRunning = false;
+      await stopCompressionLogging();
+      return { success: true, running: false };
+    });
+  });
+
+  ipcMain.handle('compression:reset', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    return await safeExecute('compression-reset', async () => {
+      await modbusClient.writeCoil(COIL_COMP_RESET, true); // M7 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_START, false); // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_STOP, false);  // M8 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_COMP_TARE, false);  // M9 = false
+      await delay(25);
+      compressionRunning = false;
+      await stopCompressionLogging();
+      lastCompDistance = 0;
+      lastCompForce = 0;
+      return { success: true, reset: true };
+    });
+  });
+
+  ipcMain.handle('compression:tare', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    if (compressionTareActive) {
+      return { success: false, message: 'Compression tare is already active' };
+    }
+
+    return await safeExecute('compression-tare', async () => {
+      await modbusClient.writeCoil(COIL_COMP_TARE, true);  // M9 = true
+      await delay(25);
+      compressionTareActive = true;
+
+      if (compressionTareTimer) clearTimeout(compressionTareTimer);
+      compressionTareTimer = setTimeout(async () => {
+        safeExecute('compression-tare-off', async () => {
+          try {
+            if (modbusClient && isConnected && modbusClient.isOpen) {
+              await modbusClient.writeCoil(COIL_COMP_TARE, false); // M9 = false
+            }
+          } catch (e) {} finally {
+            compressionTareActive = false;
+          }
+          return {};
+        });
+      }, 1000);
+
+      return { success: true, tare: true };
     });
   });
 
