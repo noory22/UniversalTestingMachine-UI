@@ -92,4 +92,38 @@ contextBridge.exposeInMainWorld('api', {
 
   // App lifecycle
   closeApp: () => ipcRenderer.invoke('app:close'),
+
+  // ============= AUTO-UPDATE API =============
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+  onUpdateAvailable: (callback) => {
+    const subscription = (_event, info) => callback(info);
+    ipcRenderer.on('update-available', subscription);
+    return () => ipcRenderer.removeListener('update-available', subscription);
+  },
+  onUpdateStatus: (callback) => {
+    const subscription = (_event, status) => callback(status);
+    ipcRenderer.on('update-status', subscription);
+    return () => ipcRenderer.removeListener('update-status', subscription);
+  },
+  onUpdateProgress: (callback) => {
+    const subscription = (_event, progress) => callback(progress);
+    ipcRenderer.on('update-progress', subscription);
+    return () => ipcRenderer.removeListener('update-progress', subscription);
+  },
+});
+
+// Listen for update status updates
+ipcRenderer.on('update-status', (event, status) => {
+  window.dispatchEvent(new CustomEvent('update-status-change', {
+    detail: status
+  }));
+});
+
+// Listen for update progress updates
+ipcRenderer.on('update-progress', (event, progress) => {
+  window.dispatchEvent(new CustomEvent('update-progress', {
+    detail: progress
+  }));
 });

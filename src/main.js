@@ -3,11 +3,81 @@ const path = require('path');
 const fs = require('fs');
 const ModbusRTU = require('modbus-serial');
 const { SerialPort } = require('serialport');
+const { autoUpdater } = require('electron-updater');
+const https = require('https');
+const http = require('http');
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 // Prevent garbage collection of main window
 let mainWindow = null;
+
+// ============================
+// AUTO-UPDATER CONFIGURATION
+// ============================
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
+
+if (!isDev) {
+  autoUpdater.on('checking-for-update', () => {
+    console.log('Checking for updates...');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-status', 'Checking for updates...');
+    }
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('Update available:', info);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-status', 'Update available');
+      mainWindow.webContents.send('update-available', info);
+    }
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('No updates available');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-status', 'latest');
+    }
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('Update error:', err);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const errMsg = (err.message || err.toString() || '').toLowerCase();
+      const isNotFoundError = errMsg.includes('404') ||
+        errMsg.includes('not found') ||
+        errMsg.includes('unable to find') ||
+        errMsg.includes('cannot find') ||
+        errMsg.includes('no published versions') ||
+        errMsg.includes('err_updater_latest_version_not_found') ||
+        errMsg.includes('err_updater_channel_file_not_found') ||
+        errMsg.includes('err_updater_no_published_versions') ||
+        errMsg.includes('latest.yml');
+
+      if (isNotFoundError) {
+        console.log('No updates found on server (treating as up-to-date).');
+        mainWindow.webContents.send('update-status', 'latest');
+      } else {
+        mainWindow.webContents.send('update-status', `Error: ${err.message}`);
+      }
+    }
+  });
+
+  autoUpdater.on('download-progress', (progressObj) => {
+    console.log(`Download progress: ${progressObj.percent}%`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-progress', progressObj);
+    }
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('Update downloaded:', info);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-status', 'downloaded');
+    }
+  });
+}
 
 // Modbus & Hardware state
 let modbusClient = null;
@@ -700,6 +770,13 @@ app.whenReady().then(() => {
   setupIpcHandlers();
   createWindow();
   processModbusLoop(); // Start coordinator loop
+
+  // Check for updates on startup (with a small delay to ensure window is ready)
+  if (!isDev) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdatesAndNotify();
+    }, 5000);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1555,4 +1632,183 @@ function setupIpcHandlers() {
       mainWindow.close();
     }
   });
+
+  // 26. Auto-Updater handlers
+  ipcMain.handle('check-for-updates', async () => {
+    return await checkForUpdatesHandler(true);
+  });
+
+  ipcMain.handle('download-update', async () => {
+    if (!isDev) {
+      try {
+        await autoUpdater.downloadUpdate();
+      } catch (err) {
+        console.error('Download update error:', err);
+      }
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('quit-and-install', () => {
+    if (!isDev) {
+      autoUpdater.quitAndInstall();
+    }
+  });
+
+  ipcMain.handle('get-update-progress', () => {
+    return { success: true };
+  });
+}
+
+// ============================
+// GITHUB RELEASE & AUTO-UPDATE ENGINE
+// ============================
+let pendingUpdateInfo = null;
+
+function parseSemver(v) {
+  if (!v) return [0, 0, 0];
+  const match = String(v).match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return [0, 0, 0];
+  return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+}
+
+function isNewerVersion(remote, local) {
+  const [rMaj, rMin, rPat] = parseSemver(remote);
+  const [lMaj, lMin, lPat] = parseSemver(local);
+  if (rMaj !== lMaj) return rMaj > lMaj;
+  if (rMin !== lMin) return rMin > lMin;
+  return rPat > lPat;
+}
+
+function fetchGitHubReleases(owner, repo) {
+  return new Promise((resolve, reject) => {
+    function get(urlStr, maxRedirects = 5) {
+      if (maxRedirects <= 0) return reject(new Error('Too many redirects'));
+      const parsedUrl = new URL(urlStr);
+      const headers = {
+        'User-Agent': 'UTM-Desktop-App',
+        'Accept': 'application/vnd.github.v3+json'
+      };
+      if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
+        headers['Authorization'] = `token ${process.env.GH_TOKEN || process.env.GITHUB_TOKEN}`;
+      }
+
+      const req = https.get(parsedUrl, { headers }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return get(res.headers.location, maxRedirects - 1);
+        }
+
+        if (res.statusCode === 404) {
+          return resolve([]);
+        }
+
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            try {
+              const parsed = JSON.parse(data);
+              resolve(Array.isArray(parsed) ? parsed : [parsed]);
+            } catch (e) {
+              reject(e);
+            }
+          } else {
+            reject(new Error(`GitHub returned HTTP ${res.statusCode}`));
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.setTimeout(12000, () => {
+        req.destroy(new Error('Request timed out'));
+      });
+    }
+
+    get(`https://api.github.com/repos/${owner}/${repo}/releases`);
+  });
+}
+
+async function checkForUpdatesHandler(isManual = false) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', 'Checking for updates...');
+  }
+
+  const currentVersion = app.getVersion();
+  console.log(`Checking for updates... Current version: ${currentVersion}`);
+
+  try {
+    const releases = await fetchGitHubReleases('noory22', 'UniversalTestingMachine-UI');
+    const publishedReleases = releases.filter(r => !r.draft);
+
+    if (publishedReleases.length === 0) {
+      console.log('No published releases found on GitHub. Application is up to date.');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-status', 'latest');
+      }
+      return { success: true, message: 'You are using the latest version.' };
+    }
+
+    const latestRelease = publishedReleases[0];
+    const rawTag = latestRelease.tag_name || latestRelease.name || '';
+    const match = rawTag.match(/(\d+\.\d+\.\d+)/);
+    const remoteVersion = match ? match[1] : rawTag;
+
+    console.log(`Latest release on GitHub: ${rawTag} -> version ${remoteVersion}`);
+
+    if (remoteVersion && isNewerVersion(remoteVersion, currentVersion)) {
+      console.log(`New version found: ${remoteVersion} (current: ${currentVersion})`);
+
+      const exeAsset = latestRelease.assets?.find(a => a.name && a.name.endsWith('.exe')) ||
+        latestRelease.assets?.[0];
+
+      pendingUpdateInfo = {
+        version: remoteVersion,
+        releaseName: latestRelease.name || `v${remoteVersion}`,
+        releaseNotes: latestRelease.body || '',
+        downloadUrl: exeAsset ? exeAsset.browser_download_url : latestRelease.html_url,
+        fileName: exeAsset ? exeAsset.name : `UTM-Setup-${remoteVersion}.exe`
+      };
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-available', pendingUpdateInfo);
+        mainWindow.webContents.send('update-status', 'Update available');
+      }
+
+      return { success: true, updateAvailable: true, version: remoteVersion };
+    } else {
+      console.log(`Application is up to date. (GitHub: ${remoteVersion}, Installed: ${currentVersion})`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-status', 'latest');
+      }
+      return { success: true, updateAvailable: false, message: 'You are using the latest version.' };
+    }
+  } catch (err) {
+    console.error('Update check error, falling back to electron-updater:', err.message);
+
+    // Fallback: try electron-updater if not in dev
+    if (!isDev) {
+      try {
+        await autoUpdater.checkForUpdates();
+        return { success: true };
+      } catch (e) {
+        console.error('autoUpdater fallback failed:', e.message);
+      }
+    }
+
+    const errMsg = (err.message || '').toLowerCase();
+    const isNetworkError = errMsg.includes('enotfound') ||
+      errMsg.includes('econnrefused') ||
+      errMsg.includes('etimedout') ||
+      errMsg.includes('timed out');
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (isNetworkError) {
+        mainWindow.webContents.send('update-status', 'Error: Unable to reach GitHub. Please check your internet connection.');
+      } else {
+        console.log('Treating non-fatal update check as latest version.');
+        mainWindow.webContents.send('update-status', 'latest');
+      }
+    }
+    return { success: false, error: err.message };
+  }
 }

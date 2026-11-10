@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers } from 'lucide-react';
+import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers, RefreshCw } from 'lucide-react';
 
 const MainMenu = () => {
   const [selectedOption, setSelectedOption] = useState(null);
@@ -109,6 +109,13 @@ const MainMenu = () => {
       gradient: 'from-cyan-500 to-blue-500',
       path: '/settings',
     },
+    {
+      id: 'check-updates',
+      title: 'Check for Updates',
+      icon: <RefreshCw className="w-8 h-8" />,
+      description: 'Check if a newer version of UTM is available on GitHub',
+      gradient: 'from-indigo-500 to-purple-500',
+    },
   ];
 
   return (
@@ -184,8 +191,26 @@ const MainMenu = () => {
                     className={`group relative bg-white/70 backdrop-blur-sm border-2 rounded-2xl p-7 cursor-pointer transition-all duration-500 flex items-center gap-6 text-left shadow-xl hover:shadow-2xl transform hover:-translate-y-1 overflow-hidden border-gray-200/50 hover:border-blue-400/80 hover:bg-white/90 ${
                       selectedOption === option.id ? 'border-blue-400 bg-blue-50/80 shadow-blue-200/50' : ''
                     }`}
-                    onClick={() => {
+                    onClick={async () => {
                       setSelectedOption(option.id);
+                      if (option.id === 'check-updates') {
+                        try {
+                          console.log('Manually checking for updates...');
+                          window.dispatchEvent(new CustomEvent('manual-check-triggered'));
+                          if (window.api && window.api.checkForUpdates) {
+                            const res = await window.api.checkForUpdates();
+                            console.log('Check for updates response:', res);
+                          } else {
+                            console.warn('window.api.checkForUpdates not available');
+                          }
+                        } catch (error) {
+                          console.error('Update check error:', error);
+                          window.dispatchEvent(new CustomEvent('update-status-change', {
+                            detail: `Error: ${error.message || 'Check failed'}`
+                          }));
+                        }
+                        return;
+                      }
                       if (option.id === 'manual-mode' && window.api && window.api.manual) {
                         window.api.manual().catch((err) => console.error('Manual mode activate error:', err));
                       }
@@ -195,7 +220,9 @@ const MainMenu = () => {
                       if (option.id === 'compression-test' && window.api && window.api.enterCompressionMode) {
                         window.api.enterCompressionMode().catch((err) => console.error('Compression mode activate error:', err));
                       }
-                      navigate(option.path);
+                      if (option.path) {
+                        navigate(option.path);
+                      }
                     }}
                     style={{ animationDelay: `${index * 100}ms` }}
                   >

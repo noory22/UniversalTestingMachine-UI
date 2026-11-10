@@ -8,6 +8,7 @@ import ProcessLogs from './ProcessLogs.jsx';
 import Settings from './Settings.jsx';
 import Manual from './Manual.jsx';
 import CompressionTest from './CompressionTest.jsx';
+import UpdateChecker from './UpdateChecker.jsx';
 
 const rootElement = document.getElementById('root');
 const root = ReactDOM.createRoot(rootElement);
@@ -23,6 +24,7 @@ const App = () => {
         <Route path="/process-logs" element={<ProcessLogs />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
+      <UpdateChecker />
     </HashRouter>
   );
 };

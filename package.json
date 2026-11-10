@@ -7,7 +7,11 @@
     "name": "Revive Medical Technologies"
   },
   "license": "MIT",
-  "private": true,
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/noory22/UniversalTestingMachine-UI.git"
+  },
   "scripts": {
     "dev": "node dev.js",
     "build:renderer": "vite build --config vite.renderer.config.mjs",
@@ -61,6 +65,13 @@
     "appId": "com.revivemedical.utm",
     "productName": "UTM",
     "copyright": "Copyright © 2026 Revive Medical Technologies",
+    "publish": {
+      "provider": "github",
+      "owner": "noory22",
+      "repo": "UniversalTestingMachine-UI",
+      "private": false,
+      "releaseType": "release"
+    },
     "directories": {
       "output": "dist"
     },

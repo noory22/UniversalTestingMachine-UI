@@ -1,10 +1,19 @@
+const path = require('path');
+
 module.exports = {
   buildIdentifier: 'prod',
   packagerConfig: {
     asar: {
       unpack: '**/*.node',
     },
-    icon: './rsc/CTTM v1.0.0.ico',
+    icon: path.resolve(__dirname, 'src/assets/icon.ico'),
+    win32metadata: {
+      CompanyName: 'Revive Medical Technologies',
+      FileDescription: 'Desktop App',
+      OriginalFileName: 'Universal Testing Machine',
+      ProductName: 'UTM',
+      InternalName: 'Universal Testing Machine',
+    },
     extraResource: [
       './logs'
     ],
@@ -27,6 +36,18 @@ module.exports = {
     {
       name: '@electron-forge/maker-zip',
       platforms: ['win32'],
+    },
+  ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'noory22',
+          name: 'UniversalTestingMachine-UI',
+        },
+        prerelease: false,
+      },
     },
   ],
   plugins: [
@@ -55,4 +76,3 @@ module.exports = {
     },
   ],
 };
-
