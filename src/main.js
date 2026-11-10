@@ -274,6 +274,7 @@ function formatTimestamp(d = new Date()) {
 async function processModbusLoop() {
   if (isLoopRunning) return;
   isLoopRunning = true;
+  let slowCycleCounter = 0;
 
   while (true) {
     // 0. Check unexpected port closure
@@ -291,7 +292,7 @@ async function processModbusLoop() {
     }
 
     try {
-      // 2. Process High Priority Commands FIRST (Writes, Modes, Start/Stop/Reset/Tare)
+      // 2. Process High Priority Commands FIRST (Writes, Modes, Start/Stop/Reset/Tare/Jog)
       if (commandQueue.length > 0) {
         const cmd = commandQueue.shift();
         try {
@@ -301,54 +302,20 @@ async function processModbusLoop() {
           console.error(`❌ Command ${cmd.commandName} failed:`, e.message);
           cmd.reject(e);
         }
-        await delay(30); // 30ms inter-frame silence
+        // Immediately loop to execute any next queued command without waiting for reads
         continue;
       }
 
-      // 3. Telemetry Read Cycle (Sequential, matching Python main.py)
+      // 3. Telemetry Read Cycle
       let cycleSuccess = false;
 
-      // 3a. Read REG_Z (R5)
-      try {
-        const respZ = await modbusClient.readHoldingRegisters(5, 1);
-        if (respZ && respZ.data && respZ.data.length > 0) {
-          const newZ = respZ.data[0];
-          if (newZ !== regZValue) {
-            regZValue = newZ;
-            sendProcessState();
-          }
-          cycleSuccess = true;
-        }
-      } catch (e) {
-        // Individual catch prevents timeout cascade
-      }
-
-      await delay(20); // 20ms inter-frame gap
-
-      // 3b. Read Process Mode Distance: D52 (simple 16-bit register, Fatek offset 6052)
-      let distance = lastDistance;
-      try {
-        const respD52 = await modbusClient.readHoldingRegisters(REG_PROCESS_DISTANCE, 1);
-        if (respD52 && respD52.data && respD52.data.length > 0) {
-          const rawD52 = respD52.data[0];
-          // Signed 16-bit two's-complement conversion (same as D2 manual distance)
-          distance = rawD52 > 32767 ? rawD52 - 65536 : rawD52;
-          lastDistance = distance;
-          cycleSuccess = true;
-        }
-      } catch (e) {
-        console.error('[D52] Modbus read error at address', REG_PROCESS_DISTANCE, ':', e.message);
-      }
-
-      await delay(20);
-
-      // 3c. Read Force: R154 + R155 (32-bit float LE, unified for all modes)
+      // 3a. Read Force: R154 + R155 (32-bit float LE, unified for all modes)
       let force = lastForce;
       try {
         const respForce = await modbusClient.readHoldingRegisters(REG_FORCE, 2);
         if (respForce && respForce.data && respForce.data.length >= 2) {
-          const r154 = respForce.data[0]; // low word
-          const r155 = respForce.data[1]; // high word
+          const r154 = respForce.data[0];
+          const r155 = respForce.data[1];
           const buf = Buffer.alloc(4);
           buf.writeUInt16LE(r154, 0);
           buf.writeUInt16LE(r155, 2);
@@ -362,44 +329,7 @@ async function processModbusLoop() {
         }
       } catch (e) {}
 
-      await delay(20);
-
-      // 3d. Read Settings Registers: R100 (REG_F) & R101 (REG_G)
-      let r100 = lastR100;
-      let r101 = lastR101;
-      try {
-        const respSettings = await modbusClient.readHoldingRegisters(100, 2);
-        if (respSettings && respSettings.data && respSettings.data.length >= 2) {
-          let raw100 = respSettings.data[0];
-          let raw101 = respSettings.data[1];
-          r100 = raw100 > 32767 ? raw100 - 65536 : raw100;
-          r101 = raw101 > 32767 ? raw101 - 65536 : raw101;
-          lastR100 = r100;
-          lastR101 = r101;
-          cycleSuccess = true;
-        }
-      } catch (e) {}
-
-      await delay(20);
-
-      // 3e. Read Manual Distance: D2 (6002)
-      let manualDistance = lastManualDistance;
-      try {
-        const respD2 = await modbusClient.readHoldingRegisters(REG_MANUAL_DISTANCE, 1);
-        if (respD2 && respD2.data && respD2.data.length > 0) {
-          const rawD2 = respD2.data[0];
-          manualDistance = rawD2 > 32767 ? rawD2 - 65536 : rawD2;
-          lastManualDistance = manualDistance;
-          cycleSuccess = true;
-        }
-      } catch (e) {}
-
-      // 3f. Manual force is unified with R154 32-bit float
-      let manualForce = force;
-
-      await delay(20);
-
-      // 3g. Read X1 Discrete Input: Homing / Lower Limit Sensor (Fatek 1001)
+      // 3b. Read X1 Discrete Input: Homing / Lower Limit Sensor (Fatek 1001)
       let x1 = lastX1;
       try {
         const respX1 = await modbusClient.readDiscreteInputs(INPUT_X1, 1);
@@ -419,16 +349,46 @@ async function processModbusLoop() {
         } catch (e2) {}
       }
 
-      // 3h. Read Compression Mode Telemetry: D104 + D105 (32-bit Float LE Distance) & R90 (16-bit Float Force)
+      // 3c. Mode-Aware Reading for Distance and Mode Registers
+      let distance = lastDistance;
+      let manualDistance = lastManualDistance;
       let compDistance = lastCompDistance;
       let compForce = lastCompForce;
-      if (compressionModeActive) {
-        await delay(20);
+
+      if (processModeM20Active || processRunning) {
+        // --- Tensile / Process Mode (M20) ---
+        // Read Process Distance: D52 (6052)
+        try {
+          const respD52 = await modbusClient.readHoldingRegisters(REG_PROCESS_DISTANCE, 1);
+          if (respD52 && respD52.data && respD52.data.length > 0) {
+            const rawD52 = respD52.data[0];
+            distance = rawD52 > 32767 ? rawD52 - 65536 : rawD52;
+            lastDistance = distance;
+            cycleSuccess = true;
+          }
+        } catch (e) {}
+
+        // Read REG_Z (R5)
+        try {
+          const respZ = await modbusClient.readHoldingRegisters(5, 1);
+          if (respZ && respZ.data && respZ.data.length > 0) {
+            const newZ = respZ.data[0];
+            if (newZ !== regZValue) {
+              regZValue = newZ;
+              sendProcessState();
+            }
+            cycleSuccess = true;
+          }
+        } catch (e) {}
+
+      } else if (compressionModeActive || compressionRunning) {
+        // --- Compression Test Mode (M30) ---
+        // Read Compression Distance: D104 + D105 (32-bit Float LE, 6104)
         try {
           const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 2);
           if (respCompD && respCompD.data && respCompD.data.length >= 2) {
-            const d104 = respCompD.data[0]; // low word
-            const d105 = respCompD.data[1]; // high word
+            const d104 = respCompD.data[0];
+            const d105 = respCompD.data[1];
             const buf = Buffer.alloc(4);
             buf.writeUInt16LE(d104, 0);
             buf.writeUInt16LE(d105, 2);
@@ -441,21 +401,50 @@ async function processModbusLoop() {
           }
         } catch (e) {}
 
-        await delay(20);
+        // Read Compression Force: R90 (16-bit)
         try {
           const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
           if (respCompF && respCompF.data && respCompF.data.length > 0) {
-            const rawF = respCompF.data[0];
-            // Unsigned 16-bit integer (0 to 65535, strictly positive)
-            const f = rawF;
-            compForce = f;
+            compForce = respCompF.data[0];
             lastCompForce = compForce;
             cycleSuccess = true;
           }
-        } catch (e) {
-          console.error('[R90] Modbus read error at address', REG_COMP_FORCE, ':', e.message);
-        }
+        } catch (e) {}
+
+      } else {
+        // --- Manual Mode (M10) / Default State ---
+        // Read Manual Distance: D2 (6002)
+        try {
+          const respD2 = await modbusClient.readHoldingRegisters(REG_MANUAL_DISTANCE, 1);
+          if (respD2 && respD2.data && respD2.data.length > 0) {
+            const rawD2 = respD2.data[0];
+            manualDistance = rawD2 > 32767 ? rawD2 - 65536 : rawD2;
+            lastManualDistance = manualDistance;
+            cycleSuccess = true;
+          }
+        } catch (e) {}
       }
+
+      // 3d. Settings / Calibration Registers: R100 & R101 (read on slow cycle every ~300ms)
+      let r100 = lastR100;
+      let r101 = lastR101;
+      slowCycleCounter = (slowCycleCounter + 1) % 10;
+      if (slowCycleCounter === 0) {
+        try {
+          const respSettings = await modbusClient.readHoldingRegisters(100, 2);
+          if (respSettings && respSettings.data && respSettings.data.length >= 2) {
+            let raw100 = respSettings.data[0];
+            let raw101 = respSettings.data[1];
+            r100 = raw100 > 32767 ? raw100 - 65536 : raw100;
+            r101 = raw101 > 32767 ? raw101 - 65536 : raw101;
+            lastR100 = r100;
+            lastR101 = r101;
+            cycleSuccess = true;
+          }
+        } catch (e) {}
+      }
+
+      let manualForce = force;
 
       // Safety Guard: If machine reaches X1 home limit while moving down, halt Motor Down (M12)
       if (x1 && motorDownState) {
@@ -513,7 +502,6 @@ async function processModbusLoop() {
         compressionTareActive,
       });
 
-      // Record CSV row if process is active and tare is not running
       // Record CSV row if compression test is active and tare is not running
       if (compressionRunning && !compressionTareActive && activeCompCsvStream) {
         const ts = formatTimestamp();
@@ -522,6 +510,7 @@ async function processModbusLoop() {
         activeCompCsvStream.write(row);
       }
 
+      // Record CSV row if process is active and tare is not running
       if (processRunning && !tearActive && activeCsvStream) {
         const ts = formatTimestamp();
         const forceN = (force / 1000.0).toFixed(6);
@@ -535,8 +524,8 @@ async function processModbusLoop() {
       continue;
     }
 
-    // 500ms cycle interval matching Python update_interval = 500
-    await delay(500);
+    // High-speed yield matching CTTM-VD (20ms yield between cycles)
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
@@ -602,7 +591,7 @@ async function connectPortInternal(portName) {
 
   try {
     modbusClient = new ModbusRTU();
-    modbusClient.setTimeout(1000); // 1000ms timeout matching Python TIMEOUT = 1
+    modbusClient.setTimeout(300); // 300ms timeout matching CTTM-VD
 
     modbusClient.on('error', (err) => {
       console.warn('⚠️ Modbus background client warning:', err?.message || err);
@@ -1623,15 +1612,21 @@ function setupIpcHandlers() {
   ipcMain.handle('disable-manual-mode', handleDisableManual);
   ipcMain.handle('utm:disable-manual-mode', handleDisableManual);
 
-  // 24. Read PLC Data (for compatibility with CTTM-VD polling pattern)
+    // 24. Read PLC Data (for compatibility with CTTM-VD polling pattern)
   ipcMain.handle('read-data', async () => {
+    const currentDistance = compressionModeActive ? lastCompDistance : (processModeM20Active ? lastDistance : lastManualDistance);
+    const currentForce = compressionModeActive ? lastCompForce : lastForce;
+
     return {
       success: true,
       connected: isConnected,
-      distance: lastManualDistance,
+      distance: currentDistance,
+      distanceDisplay: `${currentDistance} mm`,
       manualDistance: lastManualDistance,
-      force: lastForce,
-      force_mN: lastForce,
+      manualDistanceDisplay: `${lastManualDistance} mm`,
+      force: currentForce,
+      force_mN: currentForce,
+      forceDisplay: `${currentForce} N`,
       manualForce: lastForce,
       motorUp: motorUpState,
       motorDown: motorDownState,
@@ -1641,6 +1636,11 @@ function setupIpcHandlers() {
       manualMode: manualModeActive,
       x1: lastX1,
       atHome: lastX1,
+      rawForce: lastR100,
+      realtimePlcValue: lastR101,
+      regZ: regZValue,
+      processRunning,
+      compressionRunning,
     };
   });
 
