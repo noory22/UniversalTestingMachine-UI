@@ -108,7 +108,7 @@ export default function CompressionTest() {
         unsubTelemetry = window.api.onTelemetry((data) => {
           if (!isMounted || !data) return;
 
-          const liveForce = data.compForce !== undefined ? data.compForce : (data.force !== undefined ? data.force : 0);
+          const liveForce = typeof data.compForce === 'number' ? data.compForce : 0;
           setTelemetry({
             compDistance: data.compDistance !== undefined ? data.compDistance : 0,
             compForce: liveForce,
@@ -304,7 +304,7 @@ export default function CompressionTest() {
         type: 'linear',
         title: {
           display: true,
-          text: 'Force (mN) [R154]',
+          text: 'Force (mN) [R90]',
           font: { weight: 'bold', size: 12 },
           color: '#475569',
         },
@@ -486,7 +486,7 @@ export default function CompressionTest() {
             </span>
           </div>
 
-          {/* Force Card (D154) */}
+          {/* Force Card (R90) */}
           <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
@@ -501,7 +501,7 @@ export default function CompressionTest() {
               </div>
             </div>
             <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
-              R154
+              R90
             </span>
           </div>
 

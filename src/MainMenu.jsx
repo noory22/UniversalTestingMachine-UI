@@ -81,7 +81,7 @@ const MainMenu = () => {
       id: 'compression-test',
       title: 'Compression Test',
       icon: <Layers className="w-8 h-8" />,
-      description: 'Execute compression testing, monitor D102/D154 registers, and view force vs. distance curves',
+      description: 'Execute compression testing, monitor D104/R90 registers, and view force vs. distance curves',
       gradient: 'from-purple-500 to-indigo-600',
       path: '/compression-test',
     },

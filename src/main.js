@@ -144,7 +144,7 @@ const COIL_COMP_RESET = COIL_RESET; // M7: Compression Reset
 const COIL_COMP_STOP = COIL_STOP;   // M8: Compression Stop
 const COIL_COMP_TARE = COIL_TARE;   // M9: Compression Tare
 const REG_COMP_DISTANCE = 6104;     // D104 (+ D105): Real-time Distance (32-bit Float LE, Fatek offset 6000 + 104)
-// Compression Force is unified with REG_FORCE (R154: 32-bit Float LE across all modes)
+const REG_COMP_FORCE = 90;          // R90: Real-time Compression Force (16-bit float register, Fatek offset 90)
 
 let compressionModeActive = false;
 let compressionRunning = false;
@@ -419,10 +419,9 @@ async function processModbusLoop() {
         } catch (e2) {}
       }
 
-      // 3h. Read Compression Mode Telemetry: D104 + D105 (32-bit Float LE Distance) & R154 (Force, unified)
+      // 3h. Read Compression Mode Telemetry: D104 + D105 (32-bit Float LE Distance) & R90 (16-bit Float Force)
       let compDistance = lastCompDistance;
-      let compForce = force; // Real-time load cell force from R154 (32-bit Float LE)
-      lastCompForce = force;
+      let compForce = lastCompForce;
       if (compressionModeActive) {
         await delay(20);
         try {
@@ -441,6 +440,21 @@ async function processModbusLoop() {
             }
           }
         } catch (e) {}
+
+        await delay(20);
+        try {
+          const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
+          if (respCompF && respCompF.data && respCompF.data.length > 0) {
+            const rawF = respCompF.data[0];
+            // Unsigned 16-bit integer (0 to 65535, strictly positive)
+            const f = rawF;
+            compForce = f;
+            lastCompForce = compForce;
+            cycleSuccess = true;
+          }
+        } catch (e) {
+          console.error('[R90] Modbus read error at address', REG_COMP_FORCE, ':', e.message);
+        }
       }
 
       // Safety Guard: If machine reaches X1 home limit while moving down, halt Motor Down (M12)
@@ -1179,6 +1193,8 @@ function setupIpcHandlers() {
     compressionModeActive = true;
     compressionRunning = false;
     compressionTareActive = false;
+    lastCompDistance = 0;
+    lastCompForce = 0;
     return await safeExecute('compression-enter', async () => {
       await modbusClient.writeCoil(COIL_COMPRESSION_MODE, true); // M30 = true
       await delay(25);
@@ -1190,6 +1206,8 @@ function setupIpcHandlers() {
     compressionModeActive = false;
     compressionRunning = false;
     compressionTareActive = false;
+    lastCompDistance = 0;
+    lastCompForce = 0;
     if (compressionTareTimer) {
       clearTimeout(compressionTareTimer);
       compressionTareTimer = null;
