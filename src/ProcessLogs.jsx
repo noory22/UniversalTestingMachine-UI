@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Chart as ChartJS,
@@ -54,6 +54,25 @@ export default function ProcessLogs() {
   const [deleteConfirm, setDeleteConfirm] = useState(null); // 'single' | 'all' | null
   const [toastMessage, setToastMessage] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const dropdownRef = useRef(null);
+
+  // Close dropdown when clicking or touching outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowDropdown(false);
+      }
+    };
+
+    if (showDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('touchstart', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, [showDropdown]);
 
   useEffect(() => {
     loadLogFiles();
@@ -358,47 +377,54 @@ export default function ProcessLogs() {
         {/* Left Sidebar - File Selection & Summary Cards */}
         <div className="w-full lg:w-96 flex flex-col gap-4 shrink-0 overflow-y-auto">
           {/* File Selector Dropdown Card */}
-          <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/50 p-5 relative">
+          <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/50 p-5 relative z-30">
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">
               Select Test Log File
             </label>
 
-            <button
-              onClick={() => setShowDropdown(!showDropdown)}
-              className="w-full flex items-center justify-between p-3.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-all cursor-pointer text-left"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <FileText className="w-5 h-5 text-blue-600 shrink-0" />
-                <span className="font-semibold text-sm text-gray-800 truncate">
-                  {selectedFile || 'No file selected'}
-                </span>
-              </div>
-              <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showDropdown ? 'rotate-180' : ''}`} />
-            </button>
+            <div className="relative" ref={dropdownRef}>
+              <button
+                type="button"
+                onClick={() => setShowDropdown(!showDropdown)}
+                className="w-full flex items-center justify-between p-3.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-all cursor-pointer text-left"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <FileText className="w-5 h-5 text-blue-600 shrink-0" />
+                  <span className="font-semibold text-sm text-gray-800 truncate">
+                    {selectedFile || 'No file selected'}
+                  </span>
+                </div>
+                <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showDropdown ? 'rotate-180' : ''}`} />
+              </button>
 
-            {/* Dropdown Menu */}
-            {showDropdown && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 max-h-72 overflow-y-auto p-1.5">
-                {logFiles.length === 0 ? (
-                  <div className="p-4 text-center text-gray-400 text-sm">No CSV logs found</div>
-                ) : (
-                  logFiles.map((file) => (
-                    <button
-                      key={file.name}
-                      onClick={() => handleSelectFile(file.name)}
-                      className={`w-full text-left p-3 rounded-xl transition-colors flex items-center justify-between cursor-pointer ${
-                        selectedFile === file.name ? 'bg-blue-50 text-blue-700 font-bold' : 'hover:bg-gray-50 text-gray-700'
-                      }`}
-                    >
-                      <span className="text-sm truncate">{file.name}</span>
-                      <span className="text-xs text-gray-400 font-mono">
-                        {(file.size / 1024).toFixed(1)} KB
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
+              {/* Dropdown Menu */}
+              {showDropdown && (
+                <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 max-h-64 overflow-y-auto p-1.5 ring-1 ring-black/5 divide-y divide-gray-100">
+                  {logFiles.length === 0 ? (
+                    <div className="p-4 text-center text-gray-400 text-sm">No CSV logs found</div>
+                  ) : (
+                    logFiles.map((file) => (
+                      <button
+                        key={file.name}
+                        type="button"
+                        onClick={() => handleSelectFile(file.name)}
+                        className={`w-full text-left p-2.5 rounded-xl transition-colors flex items-center justify-between cursor-pointer ${
+                          selectedFile === file.name ? 'bg-blue-50 text-blue-700 font-bold' : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className={`w-4 h-4 shrink-0 ${selectedFile === file.name ? 'text-blue-600' : 'text-gray-400'}`} />
+                          <span className="text-sm truncate">{file.name}</span>
+                        </div>
+                        <span className="text-xs text-gray-400 font-mono ml-2 shrink-0">
+                          {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Action Buttons */}
             <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-gray-100">
@@ -434,7 +460,7 @@ export default function ProcessLogs() {
 
           {/* Test Metrics Summary Grid */}
           {selectedFile && logDetails && (
-            <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/50 p-5 flex flex-col gap-3">
+            <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/50 p-5 flex flex-col gap-3 relative z-10">
               <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Test Run Summary</h3>
 
               {/* Peak Force */}
