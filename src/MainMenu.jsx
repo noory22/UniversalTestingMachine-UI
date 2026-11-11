@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers, RefreshCw } from 'lucide-react';
+import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers, RefreshCw, FolderOpen, FilePlus, Trash2 } from 'lucide-react';
 
 const MainMenu = () => {
   const [selectedOption, setSelectedOption] = useState(null);
@@ -69,6 +69,30 @@ const MainMenu = () => {
   };
 
   const menuOptions = [
+    {
+      id: 'load-config',
+      title: 'Load Configuration',
+      icon: <FolderOpen className="w-8 h-8" />,
+      description: 'Select saved configuration from CSV, transfer parameters to PLC, and proceed to testing',
+      gradient: 'from-blue-600 to-indigo-600',
+      path: '/handle-config/load',
+    },
+    {
+      id: 'create-config',
+      title: 'Create Configuration',
+      icon: <FilePlus className="w-8 h-8" />,
+      description: 'Define and save new testing parameters (Speed R402, Distances R403/R404, Force R405, Cycles R406) to CSV',
+      gradient: 'from-teal-500 to-emerald-600',
+      path: '/create-config',
+    },
+    {
+      id: 'delete-config',
+      title: 'Delete Configuration',
+      icon: <Trash2 className="w-8 h-8" />,
+      description: 'Remove existing configuration files from CSV storage',
+      gradient: 'from-rose-500 to-red-600',
+      path: '/handle-config/delete',
+    },
     {
       id: 'process-mode',
       title: 'Tensile Test',
@@ -180,15 +204,15 @@ const MainMenu = () => {
           <div className="flex flex-col xl:flex-row gap-10 xl:gap-16 items-center">
             {/* Left Section - Menu Options */}
             <div className="w-full xl:flex-1 xl:max-w-2xl">
-              <div className="mb-6">
+              <div className="mb-4">
                 <p className="text-xl font-semibold text-gray-500">Select an option to continue</p>
               </div>
 
-              <div className="grid gap-5">
+              <div className="grid gap-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
                 {menuOptions.map((option, index) => (
                   <button
                     key={option.id}
-                    className={`group relative bg-white/70 backdrop-blur-sm border-2 rounded-2xl p-7 cursor-pointer transition-all duration-500 flex items-center gap-6 text-left shadow-xl hover:shadow-2xl transform hover:-translate-y-1 overflow-hidden border-gray-200/50 hover:border-blue-400/80 hover:bg-white/90 ${
+                    className={`group relative bg-white/70 backdrop-blur-sm border-2 rounded-2xl p-5 cursor-pointer transition-all duration-300 flex items-center gap-5 text-left shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 overflow-hidden border-gray-200/50 hover:border-blue-400/80 hover:bg-white/90 ${
                       selectedOption === option.id ? 'border-blue-400 bg-blue-50/80 shadow-blue-200/50' : ''
                     }`}
                     onClick={async () => {

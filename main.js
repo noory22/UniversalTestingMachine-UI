@@ -12,6 +12,149 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 // Prevent garbage collection of main window
 let mainWindow = null;
 
+
+// =========================================================================
+// CONFIGURATION FILE MANAGEMENT (CSV) & PLC REGISTER DISPATCH
+// =========================================================================
+const CONFIG_FILE_PATH = path.join(app.getPath('documents'), 'UTM Logs', 'configurations.csv');
+const CONFIG_HEADERS = ['configName', 'speed', 'distanceUp', 'distanceDown', 'force', 'cycles'];
+
+async function ensureConfigFile() {
+  const dir = path.dirname(CONFIG_FILE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (!fs.existsSync(CONFIG_FILE_PATH)) {
+    fs.writeFileSync(CONFIG_FILE_PATH, CONFIG_HEADERS.join(',') + '\n', 'utf8');
+  }
+}
+
+function convertConfigsToCSV(configs) {
+  if (!configs || !configs.length) return CONFIG_HEADERS.join(',') + '\n';
+  const rows = [CONFIG_HEADERS.join(',')];
+  for (const c of configs) {
+    const vals = CONFIG_HEADERS.map(h => {
+      const v = c[h] !== undefined && c[h] !== null ? c[h] : '';
+      const escaped = String(v).replace(/"/g, '""');
+      return `"${escaped}"`;
+    });
+    rows.push(vals.join(','));
+  }
+  return rows.join('\n');
+}
+
+function convertCSVToConfigs(csvStr) {
+  if (!csvStr) return [];
+  const lines = csvStr.trim().split(/\r?\n/);
+  if (lines.length <= 1) return [];
+
+  const result = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Regex to properly handle quoted values with commas
+    const regex = /(?:^|,)(?:"([^"]*(?:""[^"]*)*)"|([^,]*))/g;
+    const values = [];
+    let match;
+    while ((match = regex.exec(line))) {
+      let val = match[1] !== undefined ? match[1].replace(/""/g, '"') : match[2];
+      values.push(val !== undefined ? val.trim() : '');
+      if (regex.lastIndex === line.length) break;
+    }
+
+    if (values.length > 0) {
+      const obj = {};
+      CONFIG_HEADERS.forEach((header, idx) => {
+        obj[header] = values[idx] !== undefined ? values[idx] : '';
+      });
+      result.push(obj);
+    }
+  }
+  return result;
+}
+
+async function readConfigurations() {
+  try {
+    await ensureConfigFile();
+    const data = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
+    return convertCSVToConfigs(data);
+  } catch (err) {
+    console.error('Error reading configurations.csv:', err);
+    return [];
+  }
+}
+
+async function writeConfigurations(configs) {
+  try {
+    await ensureConfigFile();
+    const csvData = convertConfigsToCSV(configs);
+    fs.writeFileSync(CONFIG_FILE_PATH, csvData, 'utf8');
+    return true;
+  } catch (err) {
+    console.error('Error writing configurations.csv:', err);
+    return false;
+  }
+}
+
+async function deleteConfiguration(configName) {
+  try {
+    const configs = await readConfigurations();
+    const filtered = configs.filter(c => c.configName !== configName);
+    return await writeConfigurations(filtered);
+  } catch (err) {
+    console.error('Error deleting configuration:', err);
+    return false;
+  }
+}
+
+async function sendProcessConfig(config) {
+  return await safeExecute('send-process-mode', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      throw new Error('Modbus not connected');
+    }
+
+    const speed = Math.round(parseFloat(config.speed) || 0);
+    const distanceUp = Math.round(parseFloat(config.distanceUp) || 0);
+    const distanceDown = Math.round(parseFloat(config.distanceDown) || 0);
+    const force = Math.round(parseFloat(config.force) || 0);
+    const cycles = Math.round(parseInt(config.cycles, 10) || 1);
+
+    console.log(`Writing configuration to PLC: Speed(R402)=${speed}, DistUp(R403)=${distanceUp}, DistDown(R404)=${distanceDown}, Force(R405)=${force}, Cycles(R406)=${cycles}`);
+
+    // Write R402 (Speed)
+    await modbusClient.writeRegister(402, speed);
+    await delay(30);
+
+    // Write R403 (Distance Upward)
+    await modbusClient.writeRegister(403, distanceUp);
+    await delay(30);
+
+    // Write R404 (Distance Downward)
+    await modbusClient.writeRegister(404, distanceDown);
+    await delay(30);
+
+    // Write R405 (Force)
+    await modbusClient.writeRegister(405, force);
+    await delay(30);
+
+    // Write R406 (Cycles)
+    await modbusClient.writeRegister(406, cycles);
+    await delay(30);
+
+    // Turn ON Process Mode Master Coil M20 (2020)
+    processModeM20Active = true;
+    try {
+      await modbusClient.writeCoil(COIL_PROCESS_MODE, true);
+    } catch (e) {}
+
+    return {
+      success: true,
+      message: 'Configuration successfully written to registers R402-R406 and Process Mode active'
+    };
+  });
+}
+
 // ============================
 // AUTO-UPDATER CONFIGURATION
 // ============================
@@ -1676,6 +1819,23 @@ function setupIpcHandlers() {
   ipcMain.handle('get-update-progress', () => {
     return { success: true };
   });
+  // 27. Configuration File Handlers
+  ipcMain.handle('read-config-file', async () => {
+    return await readConfigurations();
+  });
+
+  ipcMain.handle('write-config-file', async (event, configs) => {
+    return await writeConfigurations(configs);
+  });
+
+  ipcMain.handle('delete-config-file', async (event, configName) => {
+    return await deleteConfiguration(configName);
+  });
+
+  ipcMain.handle('send-process-mode', async (event, config) => {
+    return await sendProcessConfig(config);
+  });
+
 }
 
 // ============================

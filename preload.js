@@ -93,6 +93,12 @@ contextBridge.exposeInMainWorld('api', {
   // App lifecycle
   closeApp: () => ipcRenderer.invoke('app:close'),
 
+  // ============= CONFIGURATION FILE API =============
+  readConfigFile: () => ipcRenderer.invoke('read-config-file'),
+  writeConfigFile: (configs) => ipcRenderer.invoke('write-config-file', configs),
+  deleteConfigFile: (configName) => ipcRenderer.invoke('delete-config-file', configName),
+  sendProcessMode: (config) => ipcRenderer.invoke('send-process-mode', config),
+
   // ============= AUTO-UPDATE API =============
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
