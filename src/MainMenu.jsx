@@ -1,340 +1,457 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Power, Usb, Sliders, PlayCircle, FileText, Activity, Layers, RefreshCw, FolderOpen, FilePlus, Trash2 } from 'lucide-react';
+import {
+  BarChart3,
+  Database,
+  Layers,
+  Activity,
+  Play,
+  FileText,
+  CheckCircle2,
+  Clock,
+  ArrowUpRight,
+  Gauge,
+  Zap,
+  TrendingUp,
+  FilePlus,
+  RotateCcw,
+} from 'lucide-react';
 
 const MainMenu = () => {
-  const [selectedOption, setSelectedOption] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [connectionChecked, setConnectionChecked] = useState(false);
-  const [powerActive, setPowerActive] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    // Check initial connection status
-    const checkConnection = async () => {
-      try {
-        if (window.api && window.api.getConnectionStatus) {
-          const status = await window.api.getConnectionStatus();
-          setConnectionStatus(status && status.connected ? 'connected' : 'disconnected');
-          setPowerActive(status && status.connected);
-          setConnectionChecked(true);
-        }
-      } catch (err) {
-        console.error('Failed to get connection status:', err);
-        setConnectionStatus('disconnected');
-        setConnectionChecked(true);
+  const [configs, setConfigs] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [activeConfig, setActiveConfig] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isApplying, setIsApplying] = useState(false);
+
+  const [telemetry, setTelemetry] = useState({
+    distance: 0,
+    force: 0,
+    connected: false,
+    processRunning: false,
+    compressionRunning: false,
+    manualModeActive: false,
+  });
+
+  // Load Configurations, Logs, and LocalStorage
+  const loadDashboardData = async () => {
+    setIsLoading(true);
+    try {
+      // 1. Saved Configurations across Tensile, Compression, TC
+      if (window.api && window.api.readConfigFile) {
+        const [tensileList, compList, tcList] = await Promise.all([
+          window.api.readConfigFile('tensile').catch(() => []),
+          window.api.readConfigFile('compression').catch(() => []),
+          window.api.readConfigFile('tc').catch(() => []),
+        ]);
+
+        const combined = [
+          ...(Array.isArray(tensileList) ? tensileList.map((c) => ({ ...c, testType: 'tensile' })) : []),
+          ...(Array.isArray(compList) ? compList.map((c) => ({ ...c, testType: 'compression' })) : []),
+          ...(Array.isArray(tcList) ? tcList.map((c) => ({ ...c, testType: 'tc' })) : []),
+        ];
+        setConfigs(combined);
       }
-    };
 
-    checkConnection();
+      // 2. CSV Logs
+      if (window.api && (window.api.listCsvLogs || window.api.getLogFiles)) {
+        const fetchLogs = window.api.listCsvLogs || window.api.getLogFiles;
+        const res = await fetchLogs();
+        if (res && res.success && Array.isArray(res.files)) {
+          setLogs(res.files);
+        } else if (Array.isArray(res)) {
+          setLogs(res);
+        }
+      }
 
-    // Listen for live connection updates
+      // 3. Stored Active Config
+      const savedStored = localStorage.getItem('selectedConfig');
+      if (savedStored) {
+        try {
+          setActiveConfig(JSON.parse(savedStored));
+        } catch (e) {
+          console.warn('Failed parsing stored selectedConfig', e);
+        }
+      }
+    } catch (err) {
+      console.error('Error loading dashboard data:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboardData();
+
+    // Telemetry & connection listeners
+    let unsubTelemetry = () => {};
     let unsubConnection = () => {};
-    if (window.api && window.api.onConnectionStatus) {
-      unsubConnection = window.api.onConnectionStatus((status) => {
-        setConnectionStatus(status && status.connected ? 'connected' : 'disconnected');
-        setPowerActive(status && status.connected);
-        setConnectionChecked(true);
-      });
+
+    if (window.api) {
+      if (window.api.getConnectionStatus) {
+        window.api.getConnectionStatus().then((st) => {
+          if (st && st.connected) {
+            setTelemetry((prev) => ({ ...prev, connected: true }));
+          }
+        }).catch(() => {});
+      }
+
+      if (window.api.onConnectionStatus) {
+        unsubConnection = window.api.onConnectionStatus((st) => {
+          setTelemetry((prev) => ({ ...prev, connected: Boolean(st && st.connected) }));
+        });
+      }
+
+      if (window.api.onTelemetry) {
+        unsubTelemetry = window.api.onTelemetry((data) => {
+          if (data) {
+            setTelemetry((prev) => ({
+              ...prev,
+              distance: typeof data.distance === 'number' ? data.distance : prev.distance,
+              force: typeof data.force === 'number' ? data.force : prev.force,
+              processRunning: Boolean(data.processRunning),
+              compressionRunning: Boolean(data.compressionRunning),
+              manualModeActive: Boolean(data.manualModeActive),
+            }));
+          }
+        });
+      }
     }
 
     return () => {
+      unsubTelemetry();
       unsubConnection();
     };
   }, []);
 
-  const handleReconnect = async () => {
+  // Handle direct "Load & Run" for a configuration
+  const handleStartTest = async (cfg) => {
+    if (!cfg) return;
+    setIsApplying(true);
     try {
-      if (window.api && window.api.reconnect) {
-        const res = await window.api.reconnect();
-        if (res && res.success) {
-          setConnectionStatus('connected');
-          setPowerActive(true);
-        }
-      }
-    } catch (e) {
-      console.error('Reconnect failed:', e);
-    }
-  };
+      const type = (cfg.testType || 'tensile').toLowerCase();
+      let res = null;
 
-  const handleExit = () => {
-    const confirmed = window.confirm('Are you sure you want to exit?');
-    if (confirmed) {
-      if (window.api && window.api.closeApp) {
-        window.api.closeApp();
+      if (type === 'tensile' && window.api && window.api.sendTensileConfig) {
+        res = await window.api.sendTensileConfig(cfg);
+      } else if (type === 'compression' && window.api && window.api.sendCompressionConfig) {
+        res = await window.api.sendCompressionConfig(cfg);
+      } else if (type === 'tc' && window.api && window.api.sendTcConfig) {
+        res = await window.api.sendTcConfig(cfg);
+      } else if (window.api && window.api.sendProcessMode) {
+        res = await window.api.sendProcessMode(cfg);
+      }
+
+      if (res && !res.success) {
+        alert(res.message || 'Failed to dispatch configuration to PLC');
+        setIsApplying(false);
+        return;
+      }
+
+      localStorage.setItem('selectedConfig', JSON.stringify(cfg));
+      setActiveConfig(cfg);
+
+      if (type === 'tensile') {
+        navigate('/process-mode');
+      } else if (type === 'compression') {
+        navigate('/compression-test');
       } else {
-        window.close();
+        navigate('/tc-test');
       }
+    } catch (err) {
+      console.error('Failed to send configuration to PLC:', err);
+      alert('Failed to send configuration to PLC: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsApplying(false);
     }
   };
 
-  const menuOptions = [
-    {
-      id: 'load-config',
-      title: 'Load Configuration',
-      icon: <FolderOpen className="w-8 h-8" />,
-      description: 'Select saved configuration from CSV, transfer parameters to PLC, and proceed to testing',
-      gradient: 'from-blue-600 to-indigo-600',
-      path: '/handle-config/load',
-    },
-    {
-      id: 'create-config',
-      title: 'Create Configuration',
-      icon: <FilePlus className="w-8 h-8" />,
-      description: 'Define and save new testing parameters (Speed R402, Distances R403/R404, Force R405, Cycles R406) to CSV',
-      gradient: 'from-teal-500 to-emerald-600',
-      path: '/create-config',
-    },
-    {
-      id: 'delete-config',
-      title: 'Delete Configuration',
-      icon: <Trash2 className="w-8 h-8" />,
-      description: 'Remove existing configuration files from CSV storage',
-      gradient: 'from-rose-500 to-red-600',
-      path: '/handle-config/delete',
-    },
-    {
-      id: 'process-mode',
-      title: 'Tensile Test',
-      icon: <PlayCircle className="w-8 h-8" />,
-      description: 'Execute mechanical testing, view real-time curves, and control machine states',
-      gradient: 'from-blue-500 to-cyan-500',
-      path: '/process-mode',
-    },
-    {
-      id: 'compression-test',
-      title: 'Compression Test',
-      icon: <Layers className="w-8 h-8" />,
-      description: 'Execute compression testing, monitor D104/R90 registers, and view force vs. distance curves',
-      gradient: 'from-purple-500 to-indigo-600',
-      path: '/compression-test',
-    },
-    {
-      id: 'manual-mode',
-      title: 'Manual Mode',
-      icon: <Activity className="w-8 h-8" />,
-      description: 'Jog crosshead motor Up/Down, trigger homing, and inspect live distance & load cell readings',
-      gradient: 'from-amber-500 to-orange-500',
-      path: '/manual-mode',
-    },
-    {
-      id: 'process-logs',
-      title: 'Show Process Logs',
-      icon: <FileText className="w-8 h-8" />,
-      description: 'Inspect historical test curves, view data tables, and manage CSV logs',
-      gradient: 'from-green-500 to-emerald-500',
-      path: '/process-logs',
-    },
-    {
-      id: 'settings',
-      title: 'Settings & Calibration',
-      icon: <Sliders className="w-8 h-8" />,
-      description: 'Load cell calibration modes (Normal, Tare, Calibrate) and parameter registers',
-      gradient: 'from-cyan-500 to-blue-500',
-      path: '/settings',
-    },
-    {
-      id: 'check-updates',
-      title: 'Check for Updates',
-      icon: <RefreshCw className="w-8 h-8" />,
-      description: 'Check if a newer version of UTM is available on GitHub',
-      gradient: 'from-indigo-500 to-purple-500',
-    },
-  ];
+  const isMachineRunning = telemetry.processRunning || telemetry.compressionRunning;
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 select-none overflow-x-hidden">
-      {/* Header */}
-      <header className="flex items-center px-6 py-4 bg-white/80 backdrop-blur-lg shadow-xl border-b border-gray-200/50 relative z-10">
-        <div className="flex-1 flex items-center gap-4">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-            Main Menu
+    <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto select-none">
+      {/* Top Banner / Welcome Card */}
+      <section className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 text-blue-600 font-bold text-xs uppercase tracking-wider mb-1">
+            <BarChart3 className="w-4 h-4" />
+            <span>Machine Analytics & Diagnostics</span>
+          </div>
+          <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Universal Testing Machine Dashboard
           </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Real-time telemetry, configuration archives, and test execution analytics.
+          </p>
         </div>
 
-        {/* Status Indicators */}
-        <div className="flex items-center gap-3 mr-4">
-          {/* Power Status */}
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${
-              powerActive ? 'bg-green-100 border-green-200' : 'bg-red-100 border-red-200'
-            }`}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={loadDashboardData}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer border border-slate-200"
+            title="Refresh dashboard metrics"
           >
-            <Power className={`w-4 h-4 ${powerActive ? 'text-green-700' : 'text-red-700'}`} />
-            <span className={`text-sm font-medium ${powerActive ? 'text-green-700' : 'text-red-700'}`}>
-              POWERED {powerActive ? 'ON' : 'OFF'}
+            <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/create-config')}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors shadow-xs cursor-pointer"
+          >
+            <FilePlus className="w-3.5 h-3.5" />
+            New Config
+          </button>
+        </div>
+      </section>
+
+      {/* Analytics KPI Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Metric 1: Saved Configurations */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Configurations</span>
+            <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <Database className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-extrabold text-slate-900 font-mono">{configs.length}</span>
+            <span className="text-xs text-slate-500 font-medium">Saved Profiles</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Managed in configurations.csv</p>
+        </div>
+
+        {/* Metric 2: Process Logs */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Historical Logs</span>
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <FileText className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-extrabold text-slate-900 font-mono">{logs.length}</span>
+            <span className="text-xs text-slate-500 font-medium">Recorded Tests</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Archived in UTM Logs</p>
+        </div>
+
+        {/* Metric 3: Live Position */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Position (Displacement)</span>
+            <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
+              <Activity className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-extrabold text-slate-900 font-mono">
+              {telemetry.distance.toFixed(2)}
+            </span>
+            <span className="text-xs text-slate-500 font-medium">mm</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Live high-speed encoder readout</p>
+        </div>
+
+        {/* Metric 4: Live Force */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Load Cell Force</span>
+            <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+              <Gauge className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-extrabold text-slate-900 font-mono">
+              {telemetry.force.toFixed(2)}
+            </span>
+            <span className="text-xs text-slate-500 font-medium">gf</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">24-bit ADC Modbus synchronized</p>
+        </div>
+      </div>
+
+      {/* Active / Loaded Configuration Spotlight */}
+      <section className="bg-gradient-to-r from-blue-900 to-indigo-950 rounded-2xl p-6 text-white shadow-md relative overflow-hidden">
+        <div className="absolute right-0 top-0 translate-x-12 -translate-y-8 w-64 h-64 bg-blue-500/10 rounded-full blur-2xl pointer-events-none" />
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-xs font-semibold text-blue-200">
+              <Zap className="w-3 h-3 text-amber-400" />
+              Active Loaded Test Profile
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight">
+              {activeConfig ? activeConfig.configName : 'No Active Configuration Selected'}
+            </h2>
+            <p className="text-xs md:text-sm text-blue-200/80 max-w-xl">
+              {activeConfig
+                ? `Ready for automated cycle test. Speed: ${activeConfig.speed} mm/s | Up: ${activeConfig.distanceUp} mm | Down: ${activeConfig.distanceDown} mm | Force Limit: ${activeConfig.force} gf | Cycles: ${activeConfig.cycles}`
+                : 'Choose a configuration below to send parameters to PLC registers (R402-R406) and initiate tensile or compression tests.'}
+            </p>
+          </div>
+
+          {activeConfig && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={isApplying}
+                onClick={() => handleStartTest(activeConfig, 'tensile')}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold text-xs shadow-lg transition-all transform hover:-translate-y-0.5 cursor-pointer disabled:opacity-50"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                Run Tensile Test
+              </button>
+              <button
+                type="button"
+                disabled={isApplying}
+                onClick={() => handleStartTest(activeConfig, 'compression')}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg transition-all transform hover:-translate-y-0.5 cursor-pointer disabled:opacity-50"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Run Compression Test
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Main Grid: Configurations Table (Left) & Recent Logs Table (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Saved Configurations Table (Span 2) */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Saved Configurations</h3>
+              <p className="text-xs text-slate-500">Profiles stored in CSV ready to load to registers R402-R406</p>
+            </div>
+            <span className="text-xs font-mono font-semibold text-slate-400">
+              {configs.length} {configs.length === 1 ? 'Profile' : 'Profiles'}
             </span>
           </div>
 
-          {/* USB Status */}
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${
-              connectionStatus === 'connected' ? 'bg-green-100 border-green-200' : 'bg-red-100 border-red-200'
-            }`}
-          >
-            <Usb className={`w-4 h-4 ${connectionStatus === 'connected' ? 'text-green-700' : 'text-red-700'}`} />
-            <span className={`text-sm font-medium ${connectionStatus === 'connected' ? 'text-green-700' : 'text-red-700'}`}>
-              {connectionStatus === 'connected' ? 'USB Connected' : 'USB Disconnected'}
-            </span>
-          </div>
+          {configs.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 text-sm border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+              <Database className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+              <p className="font-semibold">No saved configurations found.</p>
+              <p className="text-xs text-slate-400 mt-1">Click "New Config" to create test parameters.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 text-slate-400 font-bold uppercase tracking-wider">
+                    <th className="pb-3 font-semibold">Type</th>
+                    <th className="pb-3 font-semibold">Name</th>
+                    <th className="pb-3 font-semibold">Speed (mm/s)</th>
+                    <th className="pb-3 font-semibold">Parameters</th>
+                    <th className="pb-3 font-semibold text-right">Quick Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  {configs.map((cfg, idx) => {
+                    const type = (cfg.testType || 'tensile').toLowerCase();
+                    const typeBadge =
+                      type === 'tensile'
+                        ? 'bg-blue-100 text-blue-800 border-blue-200'
+                        : type === 'compression'
+                        ? 'bg-purple-100 text-purple-800 border-purple-200'
+                        : 'bg-indigo-100 text-indigo-800 border-indigo-200';
 
-          {connectionStatus === 'disconnected' && connectionChecked && (
-            <button
-              onClick={handleReconnect}
-              className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm cursor-pointer"
-            >
-              Reconnect
-            </button>
+                    const paramsDesc =
+                      type === 'tc'
+                        ? `Up: ${cfg.distanceUp || '-'}mm | Down: ${cfg.distanceDown || '-'}mm | Force: ${cfg.force || '-'}gf | ${cfg.cycles || 1}c`
+                        : `Force Diff: ${cfg.forceDiff || cfg.force || '-'}gf | Height: ${cfg.height || '-'}mm`;
+
+                    return (
+                      <tr key={`${cfg.configName}-${idx}`} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${typeBadge}`}>
+                            {type}
+                          </span>
+                        </td>
+                        <td className="py-3 font-bold text-slate-900 truncate max-w-[140px]">
+                          {cfg.configName}
+                        </td>
+                        <td className="py-3 font-mono text-slate-600">{cfg.speed}</td>
+                        <td className="py-3 font-mono text-slate-500 text-[11px] truncate max-w-[200px]">
+                          {paramsDesc}
+                        </td>
+                        <td className="py-3 text-right">
+                          <button
+                            type="button"
+                            disabled={isApplying}
+                            onClick={() => handleStartTest(cfg)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            Start
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
-        {/* Exit Power Button */}
-        <button
-          onClick={handleExit}
-          title="Exit Application"
-          className="group bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-xl lg:rounded-2xl w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center transition-all duration-300 hover:-translate-y-1 shadow-lg hover:shadow-xl border border-red-400/30 cursor-pointer"
-        >
-          <Power className="w-5 h-5 group-hover:scale-110 transition-transform duration-300" />
-        </button>
-      </header>
+        {/* Recent Process Logs (Span 1) */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Recent Test Logs</h3>
+              <p className="text-xs text-slate-500">Historical CSV exports</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/process-logs')}
+              className="text-xs font-bold text-blue-600 hover:text-blue-700 inline-flex items-center gap-1 cursor-pointer"
+            >
+              View All <ArrowUpRight className="w-3 h-3" />
+            </button>
+          </div>
 
-      {/* Main Content */}
-      <main className="flex-1 px-8 py-10 xl:py-16 flex items-center justify-center">
-        <div className="max-w-7xl w-full mx-auto">
-          <div className="flex flex-col xl:flex-row gap-10 xl:gap-16 items-center">
-            {/* Left Section - Menu Options */}
-            <div className="w-full xl:flex-1 xl:max-w-2xl">
-              <div className="mb-4">
-                <p className="text-xl font-semibold text-gray-500">Select an option to continue</p>
-              </div>
-
-              <div className="grid gap-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
-                {menuOptions.map((option, index) => (
-                  <button
-                    key={option.id}
-                    className={`group relative bg-white/70 backdrop-blur-sm border-2 rounded-2xl p-5 cursor-pointer transition-all duration-300 flex items-center gap-5 text-left shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 overflow-hidden border-gray-200/50 hover:border-blue-400/80 hover:bg-white/90 ${
-                      selectedOption === option.id ? 'border-blue-400 bg-blue-50/80 shadow-blue-200/50' : ''
-                    }`}
-                    onClick={async () => {
-                      setSelectedOption(option.id);
-                      if (option.id === 'check-updates') {
-                        try {
-                          console.log('Manually checking for updates...');
-                          window.dispatchEvent(new CustomEvent('manual-check-triggered'));
-                          if (window.api && window.api.checkForUpdates) {
-                            const res = await window.api.checkForUpdates();
-                            console.log('Check for updates response:', res);
-                          } else {
-                            console.warn('window.api.checkForUpdates not available');
-                          }
-                        } catch (error) {
-                          console.error('Update check error:', error);
-                          window.dispatchEvent(new CustomEvent('update-status-change', {
-                            detail: `Error: ${error.message || 'Check failed'}`
-                          }));
-                        }
-                        return;
-                      }
-                      if (option.id === 'manual-mode' && window.api && window.api.manual) {
-                        window.api.manual().catch((err) => console.error('Manual mode activate error:', err));
-                      }
-                      if (option.id === 'process-mode' && window.api && window.api.enterProcessMode) {
-                        window.api.enterProcessMode().catch((err) => console.error('Process mode activate error:', err));
-                      }
-                      if (option.id === 'compression-test' && window.api && window.api.enterCompressionMode) {
-                        window.api.enterCompressionMode().catch((err) => console.error('Compression mode activate error:', err));
-                      }
-                      if (option.path) {
-                        navigate(option.path);
-                      }
-                    }}
-                    style={{ animationDelay: `${index * 100}ms` }}
+          {logs.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 text-sm border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+              <FileText className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+              <p className="font-semibold">No test logs recorded yet.</p>
+              <p className="text-xs text-slate-400 mt-1">Run tests to generate process logs.</p>
+            </div>
+          ) : (
+            <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+              {logs.slice(0, 7).map((logItem, idx) => {
+                const name = typeof logItem === 'string' ? logItem : logItem.name || `log_${idx}.csv`;
+                const date = typeof logItem === 'object' && logItem.date ? logItem.date : 'Recent';
+                return (
+                  <div
+                    key={`${name}-${idx}`}
+                    className="p-3 rounded-xl border border-slate-100 hover:border-slate-200 bg-slate-50/60 hover:bg-slate-50 transition-colors flex items-center justify-between gap-2"
                   >
-                    {/* Animated background gradient */}
-                    <div
-                      className={`absolute inset-0 bg-gradient-to-r ${option.gradient} opacity-0 group-hover:opacity-5 transition-opacity duration-500`}
-                    />
-
-                    {/* Left accent line */}
-                    <div
-                      className={`absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b ${option.gradient} transition-all duration-500 transform scale-y-0 group-hover:scale-y-100 origin-top ${
-                        selectedOption === option.id ? 'scale-y-100' : ''
-                      }`}
-                    />
-
-                    {/* Icon container */}
-                    <div
-                      className={`relative w-16 h-16 flex items-center justify-center rounded-xl transition-all duration-500 group-hover:scale-110 group-hover:rotate-3 bg-gradient-to-br from-gray-100 to-gray-200 text-gray-700 group-hover:from-blue-100 group-hover:to-indigo-200 group-hover:text-blue-600 ${
-                        selectedOption === option.id ? 'scale-110 rotate-3' : ''
-                      }`}
-                    >
-                      {option.icon}
-                      <div
-                        className={`absolute inset-0 rounded-xl bg-gradient-to-br ${option.gradient} opacity-0 group-hover:opacity-20 transition-opacity duration-500 blur-sm`}
-                      />
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <h3
-                        className={`text-2xl font-bold transition-colors duration-300 text-gray-800 group-hover:text-blue-800 ${
-                          selectedOption === option.id ? 'text-blue-800' : ''
-                        }`}
-                      >
-                        {option.title}
-                      </h3>
-                      <p className="text-gray-600 leading-relaxed text-sm mt-1 group-hover:text-gray-700 transition-colors duration-300">
-                        {option.description}
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-800 truncate">{name}</p>
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
+                        <Clock className="w-3 h-3" /> {date}
                       </p>
                     </div>
-
-                    {/* Arrow */}
-                    <div
-                      className={`flex items-center justify-center w-10 h-10 rounded-full transition-all duration-500 transform bg-blue-100 text-blue-600 group-hover:bg-blue-200 group-hover:translate-x-2 group-hover:scale-110 ${
-                        selectedOption === option.id ? 'translate-x-2 scale-110' : ''
-                      }`}
+                    <button
+                      type="button"
+                      onClick={() => navigate('/process-logs')}
+                      className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-blue-600 bg-white hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors cursor-pointer shrink-0"
                     >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="transition-transform duration-300 group-hover:scale-125">
-                        <path d="M9 18L15 12L9 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                  </button>
-                ))}
-              </div>
+                      Inspect
+                    </button>
+                  </div>
+                );
+              })}
             </div>
-
-            {/* Right Section - Product Hero Card */}
-            <div className="w-full xl:flex-1 xl:max-w-xl flex xl:justify-center">
-              <div className="bg-white/60 backdrop-blur-lg rounded-3xl p-10 shadow-2xl border border-white/30 w-full">
-                <div className="mb-6">
-                  <h1 className="text-8xl font-bold bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 bg-clip-text text-transparent mb-3 tracking-tight leading-none">
-                    UTM
-                  </h1>
-                  <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent leading-tight">
-                    Universal Testing Machine
-                  </h2>
-                </div>
-
-                <p className="text-gray-700 text-base leading-relaxed mb-6 font-medium">
-                  A high-precision testing device engineered for evaluating the mechanical properties of materials under tensile, compression, and cyclic stress.
-                </p>
-
-                <p className="text-gray-600 text-sm leading-relaxed border-t border-gray-200/60 pt-4">
-                  Delivers real-time force vs displacement plotting, sub-millinewton load-cell accuracy, synchronized Modbus telemetry, and automatic test data archiving.
-                </p>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="relative z-10 px-8 py-4 bg-white/90 backdrop-blur-xl border-t border-gray-200/50 shadow-lg">
-        <div className="flex flex-col sm:flex-row justify-between items-center max-w-7xl mx-auto gap-2">
-          <p className="text-gray-500 text-sm">Copyright 2026 © Revive Medical Technologies Inc.</p>
-          <span className="text-xs sm:text-sm text-gray-400 font-medium">Version 1.0.0</span>
-        </div>
-      </footer>
+      </div>
     </div>
   );
 };

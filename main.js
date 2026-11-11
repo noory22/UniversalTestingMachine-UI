@@ -16,24 +16,49 @@ let mainWindow = null;
 // =========================================================================
 // CONFIGURATION FILE MANAGEMENT (CSV) & PLC REGISTER DISPATCH
 // =========================================================================
-const CONFIG_FILE_PATH = path.join(app.getPath('documents'), 'UTM Logs', 'configurations.csv');
-const CONFIG_HEADERS = ['configName', 'speed', 'distanceUp', 'distanceDown', 'force', 'cycles'];
+const CONFIG_ROOT_DIR = path.join(app.getPath('documents'), 'UTM config file');
 
-async function ensureConfigFile() {
-  const dir = path.dirname(CONFIG_FILE_PATH);
+const TEST_TYPES = {
+  tensile: {
+    folder: 'Tensile',
+    headers: ['configName', 'speed', 'forceDiff', 'height'],
+  },
+  compression: {
+    folder: 'Compression',
+    headers: ['configName', 'speed', 'forceDiff', 'height'],
+  },
+  tc: {
+    folder: 'TC',
+    headers: ['configName', 'speed', 'distanceUp', 'distanceDown', 'force', 'cycles'],
+  },
+};
+
+function getConfigFilePath(testType = 'tensile') {
+  const normType = (testType || 'tensile').toLowerCase();
+  const info = TEST_TYPES[normType] || TEST_TYPES.tensile;
+  return {
+    dir: path.join(CONFIG_ROOT_DIR, info.folder),
+    filePath: path.join(CONFIG_ROOT_DIR, info.folder, 'configurations.csv'),
+    headers: info.headers,
+    type: normType,
+  };
+}
+
+async function ensureConfigFile(testType = 'tensile') {
+  const { dir, filePath, headers } = getConfigFilePath(testType);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  if (!fs.existsSync(CONFIG_FILE_PATH)) {
-    fs.writeFileSync(CONFIG_FILE_PATH, CONFIG_HEADERS.join(',') + '\n', 'utf8');
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, headers.join(',') + '\n', 'utf8');
   }
 }
 
-function convertConfigsToCSV(configs) {
-  if (!configs || !configs.length) return CONFIG_HEADERS.join(',') + '\n';
-  const rows = [CONFIG_HEADERS.join(',')];
+function convertConfigsToCSV(configs, headers) {
+  if (!configs || !configs.length) return headers.join(',') + '\n';
+  const rows = [headers.join(',')];
   for (const c of configs) {
-    const vals = CONFIG_HEADERS.map(h => {
+    const vals = headers.map((h) => {
       const v = c[h] !== undefined && c[h] !== null ? c[h] : '';
       const escaped = String(v).replace(/"/g, '""');
       return `"${escaped}"`;
@@ -43,7 +68,7 @@ function convertConfigsToCSV(configs) {
   return rows.join('\n');
 }
 
-function convertCSVToConfigs(csvStr) {
+function convertCSVToConfigs(csvStr, headers) {
   if (!csvStr) return [];
   const lines = csvStr.trim().split(/\r?\n/);
   if (lines.length <= 1) return [];
@@ -65,7 +90,7 @@ function convertCSVToConfigs(csvStr) {
 
     if (values.length > 0) {
       const obj = {};
-      CONFIG_HEADERS.forEach((header, idx) => {
+      headers.forEach((header, idx) => {
         obj[header] = values[idx] !== undefined ? values[idx] : '';
       });
       result.push(obj);
@@ -74,72 +99,69 @@ function convertCSVToConfigs(csvStr) {
   return result;
 }
 
-async function readConfigurations() {
+async function readConfigurations(testType = 'tensile') {
   try {
-    await ensureConfigFile();
-    const data = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
-    return convertCSVToConfigs(data);
+    const { filePath, headers } = getConfigFilePath(testType);
+    await ensureConfigFile(testType);
+    const data = fs.readFileSync(filePath, 'utf8');
+    return convertCSVToConfigs(data, headers);
   } catch (err) {
-    console.error('Error reading configurations.csv:', err);
+    console.error(`Error reading ${testType} configurations.csv:`, err);
     return [];
   }
 }
 
-async function writeConfigurations(configs) {
+async function writeConfigurations(testType = 'tensile', configs = []) {
   try {
-    await ensureConfigFile();
-    const csvData = convertConfigsToCSV(configs);
-    fs.writeFileSync(CONFIG_FILE_PATH, csvData, 'utf8');
+    const { filePath, headers } = getConfigFilePath(testType);
+    await ensureConfigFile(testType);
+    const csvData = convertConfigsToCSV(configs, headers);
+    fs.writeFileSync(filePath, csvData, 'utf8');
     return true;
   } catch (err) {
-    console.error('Error writing configurations.csv:', err);
+    console.error(`Error writing ${testType} configurations.csv:`, err);
     return false;
   }
 }
 
-async function deleteConfiguration(configName) {
+async function deleteConfiguration(testType = 'tensile', configName) {
   try {
-    const configs = await readConfigurations();
-    const filtered = configs.filter(c => c.configName !== configName);
-    return await writeConfigurations(filtered);
+    const configs = await readConfigurations(testType);
+    const filtered = configs.filter((c) => c.configName !== configName);
+    return await writeConfigurations(testType, filtered);
   } catch (err) {
-    console.error('Error deleting configuration:', err);
+    console.error(`Error deleting ${testType} configuration:`, err);
     return false;
   }
 }
 
-async function sendProcessConfig(config) {
-  return await safeExecute('send-process-mode', async () => {
+// 1. Send Tensile Config: Speed -> DD54 (float LE 6054+6055), ForceDiff -> R206, Height -> R407, Coil M20
+async function sendTensileConfig(config) {
+  return await safeExecute('send-tensile-config', async () => {
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       throw new Error('Modbus not connected');
     }
 
-    const speed = Math.round(parseFloat(config.speed) || 0);
-    const distanceUp = Math.round(parseFloat(config.distanceUp) || 0);
-    const distanceDown = Math.round(parseFloat(config.distanceDown) || 0);
-    const force = Math.round(parseFloat(config.force) || 0);
-    const cycles = Math.round(parseInt(config.cycles, 10) || 1);
+    const speedVal = parseFloat(config.speed) || 0;
+    const forceDiffVal = Math.round(parseFloat(config.forceDiff) || 0);
+    const heightVal = Math.round(parseFloat(config.height) || 0);
 
-    console.log(`Writing configuration to PLC: Speed(R402)=${speed}, DistUp(R403)=${distanceUp}, DistDown(R404)=${distanceDown}, Force(R405)=${force}, Cycles(R406)=${cycles}`);
+    console.log(`Writing Tensile config: Speed(DD54)=${speedVal}, ForceDiff(R206)=${forceDiffVal}, Height(R407)=${heightVal}`);
 
-    // Write R402 (Speed)
-    await modbusClient.writeRegister(402, speed);
+    // Speed: DD54 32-bit Float LE at holding registers 6054 + 6055
+    const buf = Buffer.alloc(4);
+    buf.writeFloatLE(speedVal, 0);
+    const lowWord = buf.readUInt16LE(0);
+    const highWord = buf.readUInt16LE(2);
+    await modbusClient.writeRegisters(6054, [lowWord, highWord]);
     await delay(30);
 
-    // Write R403 (Distance Upward)
-    await modbusClient.writeRegister(403, distanceUp);
+    // Force Difference: R206
+    await modbusClient.writeRegister(206, forceDiffVal);
     await delay(30);
 
-    // Write R404 (Distance Downward)
-    await modbusClient.writeRegister(404, distanceDown);
-    await delay(30);
-
-    // Write R405 (Force)
-    await modbusClient.writeRegister(405, force);
-    await delay(30);
-
-    // Write R406 (Cycles)
-    await modbusClient.writeRegister(406, cycles);
+    // Height: R407
+    await modbusClient.writeRegister(407, heightVal);
     await delay(30);
 
     // Turn ON Process Mode Master Coil M20 (2020)
@@ -150,9 +172,88 @@ async function sendProcessConfig(config) {
 
     return {
       success: true,
-      message: 'Configuration successfully written to registers R402-R406 and Process Mode active'
+      message: 'Tensile configuration written: Speed (DD54), ForceDiff (R206), Height (R407) and M20 active.'
     };
   });
+}
+
+// 2. Send Compression Config: Speed -> R408, ForceDiff -> R409, Height -> R410, Coil M30
+async function sendCompressionConfig(config) {
+  return await safeExecute('send-compression-config', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      throw new Error('Modbus not connected');
+    }
+
+    const speedVal = Math.round(parseFloat(config.speed) || 0);
+    const forceDiffVal = Math.round(parseFloat(config.forceDiff) || 0);
+    const heightVal = Math.round(parseFloat(config.height) || 0);
+
+    console.log(`Writing Compression config: Speed(R408)=${speedVal}, ForceDiff(R409)=${forceDiffVal}, Height(R410)=${heightVal}`);
+
+    // Speed: R408
+    await modbusClient.writeRegister(408, speedVal);
+    await delay(30);
+
+    // Force Difference: R409
+    await modbusClient.writeRegister(409, forceDiffVal);
+    await delay(30);
+
+    // Height: R410
+    await modbusClient.writeRegister(410, heightVal);
+    await delay(30);
+
+    // Turn ON Compression Mode Master Coil M30 (2030)
+    compressionM30Active = true;
+    try {
+      await modbusClient.writeCoil(COIL_COMPRESSION_MODE, true);
+    } catch (e) {}
+
+    return {
+      success: true,
+      message: 'Compression configuration written: Speed (R408), ForceDiff (R409), Height (R410) and M30 active.'
+    };
+  });
+}
+
+// 3. Send TC Config: Speed -> R402, DistUp -> R403, DistDown -> R404, Force -> R405, Cycles -> R406
+async function sendTcConfig(config) {
+  return await safeExecute('send-tc-config', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      throw new Error('Modbus not connected');
+    }
+
+    const speed = Math.round(parseFloat(config.speed) || 0);
+    const distanceUp = Math.round(parseFloat(config.distanceUp) || 0);
+    const distanceDown = Math.round(parseFloat(config.distanceDown) || 0);
+    const force = Math.round(parseFloat(config.force) || 0);
+    const cycles = Math.round(parseInt(config.cycles, 10) || 1);
+
+    console.log(`Writing TC configuration to PLC: Speed(R402)=${speed}, DistUp(R403)=${distanceUp}, DistDown(R404)=${distanceDown}, Force(R405)=${force}, Cycles(R406)=${cycles}`);
+
+    await modbusClient.writeRegister(402, speed);
+    await delay(30);
+    await modbusClient.writeRegister(403, distanceUp);
+    await delay(30);
+    await modbusClient.writeRegister(404, distanceDown);
+    await delay(30);
+    await modbusClient.writeRegister(405, force);
+    await delay(30);
+    await modbusClient.writeRegister(406, cycles);
+    await delay(30);
+
+    return {
+      success: true,
+      message: 'TC configuration successfully written to registers R402-R406.'
+    };
+  });
+}
+
+async function sendProcessConfig(config) {
+  // If config has cycles and distanceUp/distanceDown, it's a TC config
+  if (config && (config.cycles !== undefined || config.distanceUp !== undefined)) {
+    return await sendTcConfig(config);
+  }
+  return await sendTensileConfig(config);
 }
 
 // ============================
@@ -1455,7 +1556,7 @@ function setupIpcHandlers() {
         return { success: true, files: [] };
       }
 
-      const fileNames = fs.readdirSync(logsDir).filter((f) => f.endsWith('.csv'));
+      const fileNames = fs.readdirSync(logsDir).filter((f) => f.endsWith('.csv') && !f.toLowerCase().includes('config'));
       const fileList = fileNames.map((name) => {
         const fullPath = path.join(logsDir, name);
         const stats = fs.statSync(fullPath);
@@ -1546,7 +1647,7 @@ function setupIpcHandlers() {
     try {
       if (!logsDir) initLogsDirectory();
       if (!fs.existsSync(logsDir)) return { success: true, count: 0 };
-      const fileNames = fs.readdirSync(logsDir).filter((f) => f.endsWith('.csv'));
+      const fileNames = fs.readdirSync(logsDir).filter((f) => f.endsWith('.csv') && !f.toLowerCase().includes('config'));
       let count = 0;
       for (const f of fileNames) {
         fs.unlinkSync(path.join(logsDir, f));
@@ -1819,20 +1920,38 @@ function setupIpcHandlers() {
   ipcMain.handle('get-update-progress', () => {
     return { success: true };
   });
-  // 27. Configuration File Handlers
-  ipcMain.handle('read-config-file', async () => {
-    return await readConfigurations();
+  // 27. Configuration File Handlers (Support testType: 'tensile' | 'compression' | 'tc')
+  ipcMain.handle('read-config-file', async (_event, testType = 'tensile') => {
+    return await readConfigurations(testType);
   });
 
-  ipcMain.handle('write-config-file', async (event, configs) => {
-    return await writeConfigurations(configs);
+  ipcMain.handle('write-config-file', async (_event, arg1, arg2) => {
+    if (Array.isArray(arg1)) {
+      return await writeConfigurations('tensile', arg1);
+    }
+    return await writeConfigurations(arg1, arg2);
   });
 
-  ipcMain.handle('delete-config-file', async (event, configName) => {
-    return await deleteConfiguration(configName);
+  ipcMain.handle('delete-config-file', async (_event, arg1, arg2) => {
+    if (arg2 !== undefined) {
+      return await deleteConfiguration(arg1, arg2);
+    }
+    return await deleteConfiguration('tensile', arg1);
   });
 
-  ipcMain.handle('send-process-mode', async (event, config) => {
+  ipcMain.handle('send-tensile-config', async (_event, config) => {
+    return await sendTensileConfig(config);
+  });
+
+  ipcMain.handle('send-compression-config', async (_event, config) => {
+    return await sendCompressionConfig(config);
+  });
+
+  ipcMain.handle('send-tc-config', async (_event, config) => {
+    return await sendTcConfig(config);
+  });
+
+  ipcMain.handle('send-process-mode', async (_event, config) => {
     return await sendProcessConfig(config);
   });
 

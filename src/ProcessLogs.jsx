@@ -327,60 +327,24 @@ export default function ProcessLogs() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="flex items-center px-6 py-3.5 bg-white/80 backdrop-blur-lg shadow-md border-b border-gray-200/50 relative z-10 shrink-0">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => navigate('/')}
-            className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-semibold text-gray-700 bg-white/80 hover:bg-white border border-gray-200 rounded-xl transition-all shadow-xs hover:shadow-sm cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Main Menu</span>
-          </button>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-            Process Logs
-          </h1>
-        </div>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-3 mr-3">
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium ${
-              connectionStatus === 'connected' ? 'bg-green-100 text-green-700 border-green-200' : 'bg-red-100 text-red-700 border-red-200'
-            }`}
-          >
-            <Usb className="w-4 h-4" />
-            <span>{connectionStatus === 'connected' ? 'USB Connected' : 'USB Disconnected'}</span>
-          </div>
-
-          <button
-            onClick={loadLogFiles}
-            title="Refresh Logs List"
-            className="p-2 bg-white hover:bg-gray-100 border border-gray-200 rounded-xl text-gray-600 transition-colors shadow-xs cursor-pointer"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-
-        <button
-          onClick={handleExit}
-          title="Exit Application"
-          className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-xl w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 shadow-md border border-red-400/30 cursor-pointer"
-        >
-          <Power className="w-4 h-4" />
-        </button>
-      </header>
-
       {/* Main Content Area */}
       <main className="flex-1 p-5 flex flex-col lg:flex-row gap-5 overflow-hidden">
         {/* Left Sidebar - File Selection & Summary Cards */}
         <div className="w-full lg:w-96 flex flex-col gap-4 shrink-0 overflow-y-auto">
           {/* File Selector Dropdown Card */}
           <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/50 p-5 relative z-30">
-            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">
-              Select Test Log File
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
+                Select Test Log File
+              </label>
+              <button
+                onClick={loadLogFiles}
+                title="Refresh Logs List"
+                className="p-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg text-gray-600 transition-colors shadow-xs cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
 
             <div className="relative" ref={dropdownRef}>
               <button

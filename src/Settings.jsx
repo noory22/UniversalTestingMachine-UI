@@ -176,69 +176,8 @@ export default function Settings() {
   const activeModeConfig = CALIBRATION_MODES.find((m) => m.id === activeMode) || CALIBRATION_MODES[0];
 
   return (
-    <div className="min-h-screen h-screen flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 select-none overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center px-6 py-3.5 bg-white/80 backdrop-blur-lg shadow-md border-b border-gray-200/50 relative z-10 shrink-0">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => navigate('/')}
-            className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-semibold text-gray-700 bg-white/80 hover:bg-white border border-gray-200 rounded-xl transition-all shadow-xs hover:shadow-sm cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Main Menu</span>
-          </button>
-          <div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-              Settings & Calibration
-            </h1>
-          </div>
-        </div>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-3 mr-3">
-          {/* Power Status */}
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium ${
-              powerActive ? 'bg-green-100 border-green-200 text-green-700' : 'bg-red-100 border-red-200 text-red-700'
-            }`}
-          >
-            <Power className="w-4 h-4" />
-            <span>POWERED {powerActive ? 'ON' : 'OFF'}</span>
-          </div>
-
-          {/* USB Status */}
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium ${
-              connectionStatus === 'connected' ? 'bg-green-100 border-green-200 text-green-700' : 'bg-red-100 border-red-200 text-red-700'
-            }`}
-          >
-            <Usb className="w-4 h-4" />
-            <span>{connectionStatus === 'connected' ? 'USB Connected' : 'USB Disconnected'}</span>
-          </div>
-
-          {connectionStatus === 'disconnected' && (
-            <button
-              onClick={handleReconnect}
-              className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-sm cursor-pointer"
-            >
-              Reconnect
-            </button>
-          )}
-        </div>
-
-        <button
-          onClick={handleExit}
-          title="Exit Application"
-          className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-xl w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 shadow-md border border-red-400/30 cursor-pointer"
-        >
-          <Power className="w-4 h-4" />
-        </button>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="flex-1 p-6 max-w-7xl mx-auto w-full flex flex-col gap-5 overflow-y-auto">
-        {/* Banner Section */}
+    <div className="p-6 max-w-7xl mx-auto w-full flex flex-col gap-5 flex-1 select-none overflow-y-auto">
+      {/* Banner Section */}
         <section className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur-md p-6 shadow-sm">
           <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-600">
             <Sliders className="h-4 w-4" />
@@ -427,8 +366,7 @@ export default function Settings() {
             </div>
           </div>
         </div>
-      </main>
-    </div>
+      </div>
   );
 }
 

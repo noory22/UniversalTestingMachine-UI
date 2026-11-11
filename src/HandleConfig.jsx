@@ -1,9 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, ChevronDown, Trash2, Play, FileText, CheckCircle, AlertCircle, X, Info } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import {
+  ChevronDown,
+  Trash2,
+  Play,
+  FileText,
+  CheckCircle,
+  AlertCircle,
+  X,
+  Info,
+  ArrowUpCircle,
+  Layers,
+  GitCompare,
+  Zap,
+} from 'lucide-react';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 
-const HandleConfig = ({ mode = 'load' }) => {
+const HandleConfig = ({ mode = 'load', testType: propTestType }) => {
   const navigate = useNavigate();
+  const params = useParams();
+  const location = useLocation();
+
+  // Determine active test type ('tensile' | 'compression' | 'tc')
+  const initialType = (
+    params.type ||
+    propTestType ||
+    new URLSearchParams(location.search).get('type') ||
+    'tensile'
+  ).toLowerCase();
+
+  const [activeTestType, setActiveTestType] = useState(
+    ['tensile', 'compression', 'tc'].includes(initialType) ? initialType : 'tensile'
+  );
+
   const [availableConfigs, setAvailableConfigs] = useState([]);
   const [selectedConfig, setSelectedConfig] = useState(null);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -13,16 +41,29 @@ const HandleConfig = ({ mode = 'load' }) => {
   const [statusMessage, setStatusMessage] = useState(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
 
+  // Sync test type if URL params change
   useEffect(() => {
-    loadAvailableConfigs();
-  }, []);
+    if (params.type && ['tensile', 'compression', 'tc'].includes(params.type.toLowerCase())) {
+      setActiveTestType(params.type.toLowerCase());
+    }
+  }, [params.type]);
 
-  const loadAvailableConfigs = async () => {
+  // Load configs whenever activeTestType changes
+  useEffect(() => {
+    loadAvailableConfigs(activeTestType);
+  }, [activeTestType]);
+
+  const loadAvailableConfigs = async (type = activeTestType) => {
     try {
       setLoadingConfigs(true);
+      setSelectedConfig(null);
       if (window.api && window.api.readConfigFile) {
-        const configs = await window.api.readConfigFile();
-        setAvailableConfigs([...configs].reverse());
+        const configs = await window.api.readConfigFile(type);
+        const reversed = Array.isArray(configs) ? [...configs].reverse() : [];
+        setAvailableConfigs(reversed);
+        if (reversed.length > 0) {
+          setSelectedConfig(reversed[0]);
+        }
       }
     } catch (error) {
       console.error('Error loading configurations:', error);
@@ -38,7 +79,8 @@ const HandleConfig = ({ mode = 'load' }) => {
     setStatusMessage(null);
   };
 
-  const handleProcessMode = async () => {
+  // Launch test with selected configuration
+  const handleStartProcess = async () => {
     if (!selectedConfig) {
       setStatusMessage({ type: 'error', text: 'Please select a configuration first.' });
       return;
@@ -48,34 +90,44 @@ const HandleConfig = ({ mode = 'load' }) => {
     setStatusMessage(null);
 
     try {
-      if (window.api && window.api.sendProcessMode) {
-        const result = await window.api.sendProcessMode({
-          configName: selectedConfig.configName,
-          speed: selectedConfig.speed,
-          distanceUp: selectedConfig.distanceUp,
-          distanceDown: selectedConfig.distanceDown,
-          force: selectedConfig.force,
-          cycles: selectedConfig.cycles,
-        });
+      let result = null;
 
-        if (!result || !result.success) {
-          setStatusMessage({
-            type: 'error',
-            text: (result && result.message) || 'PLC configuration failed. Please verify machine connection.'
-          });
-          setIsLoading(false);
-          return;
+      if (activeTestType === 'tensile') {
+        if (window.api && window.api.sendTensileConfig) {
+          result = await window.api.sendTensileConfig(selectedConfig);
         }
+      } else if (activeTestType === 'compression') {
+        if (window.api && window.api.sendCompressionConfig) {
+          result = await window.api.sendCompressionConfig(selectedConfig);
+        }
+      } else if (activeTestType === 'tc') {
+        if (window.api && window.api.sendTcConfig) {
+          result = await window.api.sendTcConfig(selectedConfig);
+        }
+      }
 
-        // Store selected config in localStorage for ProcessMode access
-        localStorage.setItem('selectedConfig', JSON.stringify(selectedConfig));
+      if (result && !result.success) {
+        setStatusMessage({
+          type: 'error',
+          text: result.message || 'PLC configuration failed. Please verify machine connection.'
+        });
+        setIsLoading(false);
+        return;
+      }
 
-        // Navigate to Process Mode
+      // Store selected config in localStorage for Test Screen access
+      localStorage.setItem('selectedConfig', JSON.stringify({
+        ...selectedConfig,
+        testType: activeTestType,
+      }));
+
+      // Navigate to the test view
+      if (activeTestType === 'tensile') {
         navigate('/process-mode');
+      } else if (activeTestType === 'compression') {
+        navigate('/compression-test');
       } else {
-        // Fallback navigation in dev
-        localStorage.setItem('selectedConfig', JSON.stringify(selectedConfig));
-        navigate('/process-mode');
+        navigate('/tc-test');
       }
     } catch (error) {
       console.error('PLC transfer failed:', error);
@@ -84,6 +136,7 @@ const HandleConfig = ({ mode = 'load' }) => {
     }
   };
 
+  // Delete configuration
   const handleDeleteConfig = async () => {
     if (!selectedConfig) {
       setStatusMessage({ type: 'error', text: 'Please select a configuration to delete.' });
@@ -95,14 +148,14 @@ const HandleConfig = ({ mode = 'load' }) => {
 
     try {
       if (window.api && window.api.deleteConfigFile) {
-        const success = await window.api.deleteConfigFile(selectedConfig.configName);
+        const success = await window.api.deleteConfigFile(activeTestType, selectedConfig.configName);
         if (success) {
           setStatusMessage({
             type: 'success',
-            text: `Configuration "${selectedConfig.configName}" has been deleted.`
+            text: `Configuration "${selectedConfig.configName}" has been deleted from ${activeTestType.toUpperCase()} archives.`
           });
           setSelectedConfig(null);
-          await loadAvailableConfigs();
+          await loadAvailableConfigs(activeTestType);
         } else {
           setStatusMessage({ type: 'error', text: 'Failed to delete configuration file.' });
         }
@@ -115,41 +168,115 @@ const HandleConfig = ({ mode = 'load' }) => {
     }
   };
 
+  const getTestTypeDetails = () => {
+    switch (activeTestType) {
+      case 'tensile':
+        return {
+          title: 'Tensile Test',
+          coil: 'M20',
+          folder: 'UTM config file/Tensile',
+          buttonLabel: 'Process Mode',
+          icon: ArrowUpCircle,
+          color: 'text-blue-600',
+        };
+      case 'compression':
+        return {
+          title: 'Compression Test',
+          coil: 'M30',
+          folder: 'UTM config file/Compression',
+          buttonLabel: 'Compression Mode',
+          icon: Layers,
+          color: 'text-purple-600',
+        };
+      case 'tc':
+      default:
+        return {
+          title: 'TC Test (Tension & Compression)',
+          coil: 'Coils M20/M30',
+          folder: 'UTM config file/TC',
+          buttonLabel: 'Start TC Test',
+          icon: GitCompare,
+          color: 'text-indigo-600',
+        };
+    }
+  };
+
+  const testDetails = getTestTypeDetails();
+  const TypeIcon = testDetails.icon;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 p-4 md:p-8 select-none">
+    <div className="p-4 md:p-8 select-none flex-1 overflow-y-auto">
       <div className="max-w-4xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between bg-white/80 backdrop-blur-md p-4 rounded-2xl border border-gray-200/50 shadow-lg">
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={() => navigate('/')}
-              className="p-2.5 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer text-slate-600 hover:text-slate-900"
-              title="Return to Main Menu"
-            >
-              <ArrowLeft className="w-6 h-6" />
-            </button>
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-                {mode === 'load' ? 'Load Configuration' : 'Delete Configuration'}
-              </h1>
-              <p className="text-xs md:text-sm text-slate-500 font-medium">
+        {/* Sub-header */}
+        <div className="flex items-center justify-between pb-1">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <TypeIcon className={`w-5 h-5 ${testDetails.color}`} />
+              <h2 className="text-xl font-bold text-slate-800">
                 {mode === 'load'
-                  ? 'Select saved configuration from CSV, transfer parameters to PLC, and proceed to testing'
-                  : 'Remove unwanted testing configurations from CSV'}
-              </p>
+                  ? `${testDetails.title} — Load Configuration`
+                  : 'Delete Configuration Profile'}
+              </h2>
             </div>
+            <p className="text-xs text-slate-500 font-medium">
+              {mode === 'load'
+                ? `Select a saved ${testDetails.title} profile from CSV. Pressing "${testDetails.buttonLabel}" writes parameters to the PLC and begins the test.`
+                : 'Remove unwanted testing configuration profiles from CSV storage.'}
+            </p>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <button
+            type="button"
+            onClick={() => setShowHelpModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition-colors cursor-pointer border border-blue-200 text-xs font-semibold"
+            title="Information"
+          >
+            <Info className="w-4 h-4" />
+            <span>Info</span>
+          </button>
+        </div>
+
+        {/* In delete mode (or if navigating freely), provide quick test-type switcher tabs */}
+        {mode === 'delete' && (
+          <div className="grid grid-cols-3 gap-3 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
             <button
-              onClick={() => setShowHelpModal(true)}
-              className="p-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition-colors cursor-pointer border border-blue-200"
-              title="Information"
+              type="button"
+              onClick={() => setActiveTestType('tensile')}
+              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                activeTestType === 'tensile'
+                  ? 'bg-white text-blue-600 shadow-md ring-1 ring-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              <Info className="w-5 h-5" />
+              <ArrowUpCircle className="w-4 h-4" />
+              <span>Tensile ({activeTestType === 'tensile' ? availableConfigs.length : ''})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTestType('compression')}
+              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                activeTestType === 'compression'
+                  ? 'bg-white text-purple-600 shadow-md ring-1 ring-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+              <span>Compression ({activeTestType === 'compression' ? availableConfigs.length : ''})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTestType('tc')}
+              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                activeTestType === 'tc'
+                  ? 'bg-white text-indigo-600 shadow-md ring-1 ring-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <GitCompare className="w-4 h-4" />
+              <span>TC ({activeTestType === 'tc' ? availableConfigs.length : ''})</span>
             </button>
           </div>
-        </div>
+        )}
 
         {/* Status Message */}
         {statusMessage && (
@@ -169,6 +296,7 @@ const HandleConfig = ({ mode = 'load' }) => {
               <p className="font-semibold text-sm">{statusMessage.text}</p>
             </div>
             <button
+              type="button"
               onClick={() => setStatusMessage(null)}
               className="p-1 hover:opacity-70 cursor-pointer"
             >
@@ -180,27 +308,32 @@ const HandleConfig = ({ mode = 'load' }) => {
         {/* Selection Card */}
         <div className="bg-white/90 backdrop-blur-md rounded-3xl shadow-xl border border-gray-200/50 p-6 md:p-8 space-y-6">
           <div>
-            <label className="block text-sm font-bold text-slate-700 mb-2">
-              Select Configuration from CSV
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-bold text-slate-700">
+                Select {testDetails.title} Configuration
+              </label>
+              <span className="text-xs text-slate-400 font-mono">
+                Source: {testDetails.folder}
+              </span>
+            </div>
+
+            {/* Dropdown Input */}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowDropdown(!showDropdown)}
                 disabled={loadingConfigs || availableConfigs.length === 0}
-                className={`w-full px-4 py-3.5 bg-slate-50 border-2 rounded-2xl flex items-center justify-between text-left transition-all cursor-pointer ${
-                  showDropdown ? 'border-blue-500 bg-white ring-4 ring-blue-100' : 'border-slate-200 hover:border-slate-300'
-                } ${availableConfigs.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className="w-full flex items-center justify-between px-4 py-3.5 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl transition-all cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <div className="flex items-center gap-3 truncate">
+                <div className="flex items-center gap-3 min-w-0">
                   <FileText className="w-5 h-5 text-blue-600 shrink-0" />
-                  <span className={`truncate font-semibold ${selectedConfig ? 'text-slate-800' : 'text-slate-400'}`}>
+                  <span className="font-bold text-sm text-slate-800 truncate">
                     {loadingConfigs
-                      ? 'Loading configurations...'
+                      ? 'Loading configurations from CSV...'
                       : selectedConfig
                       ? selectedConfig.configName
                       : availableConfigs.length === 0
-                      ? 'No configurations found in CSV'
+                      ? `No ${testDetails.title} configurations saved yet`
                       : 'Choose a configuration...'}
                   </span>
                 </div>
@@ -216,23 +349,37 @@ const HandleConfig = ({ mode = 'load' }) => {
                       type="button"
                       onClick={() => handleConfigSelection(cfg)}
                       className={`w-full px-4 py-3 text-left hover:bg-blue-50 flex items-center justify-between transition-colors cursor-pointer ${
-                        selectedConfig && selectedConfig.configName === cfg.configName ? 'bg-blue-50/80 font-bold text-blue-700' : 'text-slate-700'
+                        selectedConfig && selectedConfig.configName === cfg.configName
+                          ? 'bg-blue-50/80 font-bold text-blue-700'
+                          : 'text-slate-700'
                       }`}
                     >
                       <span className="truncate">{cfg.configName}</span>
                       <span className="text-xs text-slate-400 font-mono ml-2 shrink-0">
-                        {cfg.cycles || 1} {parseInt(cfg.cycles, 10) === 1 ? 'cycle' : 'cycles'}
+                        {activeTestType === 'tc'
+                          ? `${cfg.cycles || 1} cycles`
+                          : `Speed: ${cfg.speed || '-'} mm/s`}
                       </span>
                     </button>
                   ))}
                 </div>
               )}
             </div>
+
             {availableConfigs.length === 0 && !loadingConfigs && (
-              <p className="text-xs text-amber-600 font-medium mt-2 flex items-center gap-1">
-                <AlertCircle className="w-3.5 h-3.5" />
-                No saved configurations yet. Use "Create Configuration" to define one.
-              </p>
+              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between">
+                <p className="text-xs text-amber-800 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                  No saved profiles in "{testDetails.folder}". Create one first.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/create-config')}
+                  className="px-3 py-1 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700"
+                >
+                  Create New
+                </button>
+              </div>
             )}
           </div>
 
@@ -245,56 +392,121 @@ const HandleConfig = ({ mode = 'load' }) => {
                   {selectedConfig.configName}
                 </h3>
                 <span className="text-xs font-mono bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full font-bold">
-                  CSV Stored
+                  {activeTestType.toUpperCase()} PROFILE
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
-                    Speed (R402)
+              {/* Display Fields Depending on Test Type */}
+              {activeTestType === 'tensile' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Speed (DD54 Float)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.speed} <span className="text-xs text-slate-500 font-normal">mm/s</span>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-slate-800 font-mono">
-                    {selectedConfig.speed} <span className="text-xs text-slate-500 font-normal">mm/s</span>
-                  </div>
-                </div>
 
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
-                    Upward Dist (R403)
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Force Diff (R206)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.forceDiff} <span className="text-xs text-slate-500 font-normal">gf</span>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-slate-800 font-mono">
-                    {selectedConfig.distanceUp} <span className="text-xs text-slate-500 font-normal">mm</span>
-                  </div>
-                </div>
 
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
-                    Downward Dist (R404)
-                  </div>
-                  <div className="text-base font-bold text-slate-800 font-mono">
-                    {selectedConfig.distanceDown} <span className="text-xs text-slate-500 font-normal">mm</span>
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Height (R407)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.height} <span className="text-xs text-slate-500 font-normal">mm</span>
+                    </div>
                   </div>
                 </div>
+              )}
 
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
-                    Force Limit (R405)
+              {activeTestType === 'compression' && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Speed (R408)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.speed} <span className="text-xs text-slate-500 font-normal">mm/s</span>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-slate-800 font-mono">
-                    {selectedConfig.force} <span className="text-xs text-slate-500 font-normal">gf</span>
-                  </div>
-                </div>
 
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs sm:col-span-2">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
-                    Test Cycles (R406)
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Force Diff (R409)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.forceDiff} <span className="text-xs text-slate-500 font-normal">gf</span>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-slate-800 font-mono">
-                    {selectedConfig.cycles} <span className="text-xs text-slate-500 font-normal">cycles (1–20)</span>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Height (R410)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.height} <span className="text-xs text-slate-500 font-normal">mm</span>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
+
+              {activeTestType === 'tc' && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Speed (R402)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.speed} <span className="text-xs text-slate-500 font-normal">mm/s</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Dist Up (R403)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.distanceUp} <span className="text-xs text-slate-500 font-normal">mm</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Dist Down (R404)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.distanceDown} <span className="text-xs text-slate-500 font-normal">mm</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Force (R405)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.force} <span className="text-xs text-slate-500 font-normal">gf</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                    <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Cycles (R406)
+                    </div>
+                    <div className="text-base font-bold text-slate-800 font-mono">
+                      {selectedConfig.cycles} <span className="text-xs text-slate-500 font-normal">cycles</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -305,18 +517,18 @@ const HandleConfig = ({ mode = 'load' }) => {
               onClick={() => navigate('/')}
               className="px-6 py-3 border-2 border-slate-200 hover:border-slate-300 text-slate-600 rounded-xl font-bold transition-all cursor-pointer"
             >
-              Back to Main Menu
+              Cancel
             </button>
 
             {mode === 'load' ? (
               <button
                 type="button"
-                onClick={handleProcessMode}
+                onClick={handleStartProcess}
                 disabled={!selectedConfig || isLoading}
                 className="px-8 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold shadow-lg shadow-blue-500/25 transition-all flex items-center gap-2.5 cursor-pointer active:scale-98 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Play className="w-5 h-5 fill-current" />
-                <span>{isLoading ? 'Writing to PLC...' : 'Process Mode'}</span>
+                <span>{isLoading ? 'Writing to PLC...' : testDetails.buttonLabel}</span>
               </button>
             ) : (
               <button
@@ -333,29 +545,29 @@ const HandleConfig = ({ mode = 'load' }) => {
         </div>
 
         {/* Delete Confirmation Modal */}
-        {showDeleteConfirm && selectedConfig && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
               <div className="flex items-center gap-3 text-red-600">
-                <Trash2 className="w-6 h-6" />
-                <h3 className="text-lg font-bold text-slate-800">Confirm Deletion</h3>
+                <AlertCircle className="w-6 h-6 shrink-0" />
+                <h3 className="text-lg font-bold">Delete Configuration</h3>
               </div>
               <p className="text-sm text-slate-600">
-                Are you sure you want to permanently delete configuration{' '}
-                <strong className="text-slate-900">"{selectedConfig.configName}"</strong> from CSV?
+                Are you sure you want to permanently delete{' '}
+                <strong className="text-slate-900">"{selectedConfig && selectedConfig.configName}"</strong> from {testDetails.title} CSV storage?
               </p>
-              <div className="pt-2 flex items-center justify-end gap-3">
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowDeleteConfirm(false)}
-                  className="px-5 py-2.5 border-2 border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-colors cursor-pointer text-sm"
+                  className="px-4 py-2 border border-slate-200 rounded-xl text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleDeleteConfig}
-                  className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-500/25 transition-colors cursor-pointer text-sm"
+                  className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl font-semibold shadow-md cursor-pointer"
                 >
                   Confirm Delete
                 </button>
@@ -364,45 +576,58 @@ const HandleConfig = ({ mode = 'load' }) => {
           </div>
         )}
 
-        {/* Help Modal */}
+        {/* Register Info Modal */}
         {showHelpModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <div className="flex items-center gap-2.5 text-blue-600">
-                  <Info className="w-6 h-6" />
-                  <h3 className="text-lg font-bold text-slate-800">
-                    {mode === 'load' ? 'Load Configuration Help' : 'Delete Configuration Help'}
-                  </h3>
-                </div>
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="font-bold text-slate-900 text-base">Configuration & Register Info</h3>
                 <button
+                  type="button"
                   onClick={() => setShowHelpModal(false)}
-                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                  className="p-1 hover:bg-slate-100 rounded-lg text-slate-400"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-
-              <div className="py-4 space-y-3 text-sm text-slate-600">
-                {mode === 'load' ? (
-                  <>
-                    <p>Select any configuration saved in <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs font-mono">configurations.csv</code>.</p>
-                    <p>When you click <strong>Process Mode</strong>:</p>
-                    <ol className="list-decimal pl-5 space-y-1.5 font-medium">
-                      <li>Values are written to PLC registers <span className="font-mono text-blue-600">R402 – R406</span>.</li>
-                      <li>Process mode coil <span className="font-mono text-blue-600">M20</span> is turned ON.</li>
-                      <li>You are navigated directly to the Process Mode testing screen.</li>
-                    </ol>
-                  </>
-                ) : (
-                  <p>Choose an outdated or unwanted configuration to remove from the stored CSV file.</p>
-                )}
+              <div className="text-xs text-slate-600 space-y-2">
+                <p>When you select a configuration and click <strong>{testDetails.buttonLabel}</strong>:</p>
+                <ul className="list-disc list-inside space-y-1 font-mono text-slate-700">
+                  {activeTestType === 'tensile' && (
+                    <>
+                      <li>Speed &rarr; DD54 (32-bit Float LE at registers 6054+6055)</li>
+                      <li>Force Difference &rarr; R206</li>
+                      <li>Height &rarr; R407</li>
+                      <li>Tensile Mode Coil &rarr; M20</li>
+                    </>
+                  )}
+                  {activeTestType === 'compression' && (
+                    <>
+                      <li>Speed &rarr; R408</li>
+                      <li>Force Difference &rarr; R409</li>
+                      <li>Height &rarr; R410</li>
+                      <li>Compression Mode Coil &rarr; M30</li>
+                    </>
+                  )}
+                  {activeTestType === 'tc' && (
+                    <>
+                      <li>Speed &rarr; R402</li>
+                      <li>Distance Up &rarr; R403</li>
+                      <li>Distance Down &rarr; R404</li>
+                      <li>Force &rarr; R405</li>
+                      <li>Cycles &rarr; R406</li>
+                    </>
+                  )}
+                </ul>
+                <p className="pt-2 text-slate-400">
+                  Profiles are saved in <span className="font-mono">{testDetails.folder}</span>.
+                </p>
               </div>
-
-              <div className="pt-2 flex justify-end">
+              <div className="pt-3 border-t border-slate-100 flex justify-end">
                 <button
+                  type="button"
                   onClick={() => setShowHelpModal(false)}
-                  className="px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold cursor-pointer"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700"
                 >
                   Close
                 </button>
@@ -416,4 +641,3 @@ const HandleConfig = ({ mode = 'load' }) => {
 };
 
 export default HandleConfig;
-

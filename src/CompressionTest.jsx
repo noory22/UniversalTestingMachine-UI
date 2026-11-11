@@ -386,65 +386,6 @@ export default function CompressionTest() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="flex items-center px-6 py-3.5 bg-white/80 backdrop-blur-lg shadow-md border-b border-gray-200/50 relative z-10 shrink-0">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-semibold text-gray-700 bg-white/80 hover:bg-white border border-gray-200 rounded-xl transition-all shadow-xs hover:shadow-sm cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Main Menu</span>
-          </button>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-800 to-indigo-700 bg-clip-text text-transparent">
-              Compression Test
-            </h1>
-            <span className="px-2 py-0.5 text-xs font-bold bg-purple-100 text-purple-800 rounded-md border border-purple-200">
-              Coil: M30
-            </span>
-          </div>
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Status Indicators */}
-        <div className="flex items-center gap-3 mr-3">
-          {/* Machine State Pill */}
-          <div className={`px-3 py-1.5 rounded-lg border text-xs font-bold tracking-wider ${statusBadge.bg}`}>
-            {statusBadge.text}
-          </div>
-
-          {/* USB Indicator */}
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium ${
-              isConnected ? 'bg-green-100 text-green-700 border-green-200' : 'bg-red-100 text-red-700 border-red-200'
-            }`}
-          >
-            <Usb className="w-4 h-4" />
-            <span>{isConnected ? 'USB Connected' : 'USB Disconnected'}</span>
-          </div>
-
-          {!isConnected && (
-            <button
-              onClick={handleReconnect}
-              className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm cursor-pointer"
-            >
-              Reconnect
-            </button>
-          )}
-        </div>
-
-        {/* Exit Power Button */}
-        <button
-          onClick={handleExit}
-          title="Exit Application"
-          className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-xl w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 shadow-md border border-red-400/30 cursor-pointer"
-        >
-          <Power className="w-4 h-4" />
-        </button>
-      </header>
-
       {/* Main Content Area */}
       <main className="flex-1 p-5 flex flex-col gap-4 overflow-hidden">
         {/* Real-time Chart Glass Card */}
@@ -455,9 +396,17 @@ export default function CompressionTest() {
               <h2 className="text-base font-bold text-gray-800">
                 Compression Response: Force vs. Distance Curve
               </h2>
+              <span className="px-2 py-0.5 text-xs font-bold bg-purple-100 text-purple-800 rounded-md border border-purple-200">
+                Coil: M30
+              </span>
             </div>
-            <div className="text-xs font-medium text-gray-500">
-              {dataPoints.length} recorded points
+            <div className="flex items-center gap-3">
+              <div className={`px-2.5 py-1 rounded-lg border text-xs font-bold tracking-wider ${statusBadge.bg}`}>
+                {statusBadge.text}
+              </div>
+              <div className="text-xs font-medium text-gray-500">
+                {dataPoints.length} recorded points
+              </div>
             </div>
           </div>
           <div className="flex-1 w-full min-h-0">

@@ -373,61 +373,15 @@ const Manual = () => {
   const isHomingButtonDisabled = !connectionStatus.connected || isHomingActive || x1Active;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 p-4 md:p-6 select-none flex flex-col justify-between">
+    <div className="p-4 md:p-6 select-none flex flex-col justify-between flex-1">
       <div className="w-full max-w-7xl mx-auto flex-1 flex flex-col">
-        {/* Header matching CTTM-VD */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 md:mb-8">
-          <div className="flex items-center space-x-2 md:space-x-4">
-            <button
-              onClick={handleBack}
-              className="p-2.5 bg-white/80 hover:bg-white hover:shadow-md rounded-xl transition-all duration-200 border border-slate-200/60 shadow-sm"
-              title="Return to Main Menu"
-            >
-              <ArrowLeft className="w-6 h-6 text-slate-700" />
-            </button>
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent">
-                Manual Mode
-              </h1>
-              <p className="text-xs md:text-sm text-slate-500 font-medium">
-                Crosshead Jogging & Load Cell Diagnostics
-              </p>
-            </div>
-          </div>
-
-          {/* Badges matching CTTM-VD */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            {/* Power Status Badge */}
-            <div
-              className={`flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-xl border shadow-sm ${
-                powerActive
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : 'bg-red-50 text-red-700 border-red-200'
-              }`}
-            >
-              <Power className="w-4 h-4" />
-              <span className="text-xs sm:text-sm font-semibold tracking-wide">
-                POWERED {powerActive ? 'ON' : 'OFF'}
-              </span>
-            </div>
-
-            {/* USB Connection Status Badge */}
-            <div
-              className={`flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-xl border shadow-sm ${
-                connectionStatus.connected
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : 'bg-red-50 text-red-700 border-red-200'
-              }`}
-            >
-              <Usb className="w-4 h-4" />
-              <span className="text-xs sm:text-sm font-semibold tracking-wide">
-                {connectionStatus.connected ? 'USB Connected' : 'USB Disconnected'}
-              </span>
-            </div>
-
+        {/* Sensor & Sub-status Bar */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-bold text-slate-700">Hardware Interlocks & Sensors:</span>
             {/* X1 Home Limit Sensor Badge */}
             <div
-              className={`flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-xl border shadow-sm transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border shadow-xs transition-colors ${
                 x1Active
                   ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold'
                   : 'bg-slate-100 text-slate-600 border-slate-200 font-medium'
@@ -435,31 +389,14 @@ const Manual = () => {
               title="X1 Hardware Input: Limit / Homing Sensor Status"
             >
               <span className={`w-2 h-2 rounded-full ${x1Active ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`}></span>
-              <span className="text-xs sm:text-sm tracking-wide">
-                X1: {x1Active ? 'AT HOME' : 'OPEN'}
+              <span className="text-xs font-semibold tracking-wide">
+                X1 Sensor: {x1Active ? 'AT HOME (TRIGGERED)' : 'OPEN'}
               </span>
             </div>
+          </div>
 
-            {!connectionStatus.connected && (
-              <button
-                onClick={handleReconnect}
-                className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition-colors"
-                title="Attempt to reconnect USB"
-              >
-                Reconnect
-              </button>
-            )}
-
-            {/* Exit App Button */}
-            <button
-              onClick={handleExit}
-              className="group bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white 
-                rounded-xl w-9 h-9 sm:w-11 sm:h-11 flex items-center justify-center transition-all duration-300 hover:-translate-y-0.5 
-                shadow-md hover:shadow-lg border border-red-400/30 shrink-0"
-              title="Close Application"
-            >
-              <Power className="w-4 h-4 sm:w-5 sm:h-5 group-hover:scale-110 transition-transform duration-300" />
-            </button>
+          <div className="text-xs font-medium text-slate-500">
+            Jogging & Diagnostics Panel
           </div>
         </div>
 

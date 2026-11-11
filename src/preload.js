@@ -94,9 +94,12 @@ contextBridge.exposeInMainWorld('api', {
   closeApp: () => ipcRenderer.invoke('app:close'),
 
   // ============= CONFIGURATION FILE API =============
-  readConfigFile: () => ipcRenderer.invoke('read-config-file'),
-  writeConfigFile: (configs) => ipcRenderer.invoke('write-config-file', configs),
-  deleteConfigFile: (configName) => ipcRenderer.invoke('delete-config-file', configName),
+  readConfigFile: (testType = 'tensile') => ipcRenderer.invoke('read-config-file', testType),
+  writeConfigFile: (testType, configs) => ipcRenderer.invoke('write-config-file', testType, configs),
+  deleteConfigFile: (testType, configName) => ipcRenderer.invoke('delete-config-file', testType, configName),
+  sendTensileConfig: (config) => ipcRenderer.invoke('send-tensile-config', config),
+  sendCompressionConfig: (config) => ipcRenderer.invoke('send-compression-config', config),
+  sendTcConfig: (config) => ipcRenderer.invoke('send-tc-config', config),
   sendProcessMode: (config) => ipcRenderer.invoke('send-process-mode', config),
 
   // ============= AUTO-UPDATE API =============
