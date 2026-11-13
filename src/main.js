@@ -168,7 +168,12 @@ async function sendTensileConfig(config) {
     processModeM20Active = true;
     try {
       await modbusClient.writeCoil(COIL_PROCESS_MODE, true);
-    } catch (e) {}
+      await delay(25);
+      console.log('✅ Tensile Process Mode (M20) turned ON after writing configuration.');
+    } catch (e) {
+      console.error('Failed to write COIL_PROCESS_MODE (M20):', e.message);
+      throw e;
+    }
 
     return {
       success: true,
@@ -348,7 +353,6 @@ const COIL_MANUAL = 2010;        // M10: Manual Mode master
 const COIL_MOTOR_UP = 2011;      // M11: Motor Up
 const COIL_MOTOR_DOWN = 2012;    // M12: Motor Down
 const COIL_HOMING = 2013;        // M13: Homing
-const REG_MANUAL_DISTANCE = 6002; // D2: Distance (Fatek offset 6000 + 2)
 const REG_FORCE = 154;            // R154 (+ R155): Force (32-bit Float LE, used across all modes)
 const REG_MANUAL_FORCE = 154;     // Backwards-compatibility alias
 const INPUT_X1 = 1001;           // X1: Homing / Lower limit switch (Fatek offset 1000 + 1)
@@ -361,8 +365,10 @@ let lastManualDistance = 0;
 let lastManualForce = 0;
 let lastX1 = false;
 
-// Process Mode Registers
-const REG_PROCESS_DISTANCE = 6052; // D52: Real-time Distance (simple 16-bit register, Fatek offset 6000 + 52)
+// Distance & Mode Registers
+const REG_DISTANCE = 161;          // R161: Unified real-time distance register (independent of mode or state)
+const REG_MANUAL_DISTANCE = REG_DISTANCE;
+const REG_TENSILE_DISTANCE = REG_DISTANCE;
 const REG_SPEED = 6054;            // DD54: Speed (mm/s) (32-bit Float LE: D54 + D55, Fatek offset 6000 + 54)
 const REG_FORCE_DIFF = 206;        // R206: Force Difference (gf) (Fatek offset 206)
 
@@ -593,26 +599,29 @@ async function processModbusLoop() {
         } catch (e2) {}
       }
 
-      // 3c. Mode-Aware Reading for Distance and Mode Registers
+      // 3c. Unconditional Real-Time Distance Reading: R161 (161)
+      // Read R161 on EVERY cycle independently, regardless of process, state, or mode.
       let distance = lastDistance;
       let manualDistance = lastManualDistance;
+      try {
+        const respDist = await modbusClient.readHoldingRegisters(REG_DISTANCE, 1);
+        if (respDist && respDist.data && respDist.data.length > 0) {
+          const rawDist = respDist.data[0];
+          const distVal = rawDist > 32767 ? rawDist - 65536 : rawDist;
+          distance = distVal;
+          manualDistance = distVal;
+          lastDistance = distVal;
+          lastManualDistance = distVal;
+          cycleSuccess = true;
+        }
+      } catch (e) {}
+
+      // 3d. Process-Specific Auxiliary Register Reads
       let compDistance = lastCompDistance;
       let compForce = lastCompForce;
 
       if (processModeM20Active || processRunning) {
-        // --- Tensile / Process Mode (M20) ---
-        // Read Process Distance: D52 (6052)
-        try {
-          const respD52 = await modbusClient.readHoldingRegisters(REG_PROCESS_DISTANCE, 1);
-          if (respD52 && respD52.data && respD52.data.length > 0) {
-            const rawD52 = respD52.data[0];
-            distance = rawD52 > 32767 ? rawD52 - 65536 : rawD52;
-            lastDistance = distance;
-            cycleSuccess = true;
-          }
-        } catch (e) {}
-
-        // Read REG_Z (R5)
+        // Read REG_Z (R5) for Tensile Process Mode
         try {
           const respZ = await modbusClient.readHoldingRegisters(5, 1);
           if (respZ && respZ.data && respZ.data.length > 0) {
@@ -626,8 +635,7 @@ async function processModbusLoop() {
         } catch (e) {}
 
       } else if (compressionModeActive || compressionRunning) {
-        // --- Compression Test Mode (M30) ---
-        // Read Compression Distance: D104 + D105 (32-bit Float LE, 6104)
+        // Read Compression Distance (D104 + D105) & Force (R90)
         try {
           const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 2);
           if (respCompD && respCompD.data && respCompD.data.length >= 2) {
@@ -645,25 +653,11 @@ async function processModbusLoop() {
           }
         } catch (e) {}
 
-        // Read Compression Force: R90 (16-bit)
         try {
           const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
           if (respCompF && respCompF.data && respCompF.data.length > 0) {
             compForce = respCompF.data[0];
             lastCompForce = compForce;
-            cycleSuccess = true;
-          }
-        } catch (e) {}
-
-      } else {
-        // --- Manual Mode (M10) / Default State ---
-        // Read Manual Distance: D2 (6002)
-        try {
-          const respD2 = await modbusClient.readHoldingRegisters(REG_MANUAL_DISTANCE, 1);
-          if (respD2 && respD2.data && respD2.data.length > 0) {
-            const rawD2 = respD2.data[0];
-            manualDistance = rawD2 > 32767 ? rawD2 - 65536 : rawD2;
-            lastManualDistance = manualDistance;
             cycleSuccess = true;
           }
         } catch (e) {}
@@ -1114,8 +1108,7 @@ function setupIpcHandlers() {
     }
 
     return await safeExecute('start-process', async () => {
-      // Reset cached distance and force on start so old test values don't leak
-      lastDistance = 0;
+      // Reset force on start
       lastForce = 0.0;
 
       await modbusClient.writeCoil(COIL_START, true);   // M6 = true (Start)
@@ -1131,9 +1124,10 @@ function setupIpcHandlers() {
       tearActive = false;
       sendProcessState();
 
-      // Broadcast clean initial telemetry
+      // Broadcast initial telemetry preserving live R161 distance
       sendTelemetry({
-        distance: 0,
+        distance: lastDistance,
+        manualDistance: lastDistance,
         force: 0.0,
         r100: lastR100,
         r101: lastR101,
@@ -1208,18 +1202,11 @@ function setupIpcHandlers() {
       await modbusClient.writeCoil(COIL_TARE, false);   // M9 = false (Tare)
       await delay(25);
 
-      // Attempt to zero distance register D52 directly in PLC if writable
-      try {
-        await modbusClient.writeRegister(REG_PROCESS_DISTANCE, 0);
-      } catch (e) {
-        // Silently continue if D52 is read-only in PLC ladder logic
-      }
-
-      lastDistance = 0;
       lastForce = 0.0;
       sendProcessState();
       sendTelemetry({
-        distance: 0,
+        distance: lastDistance,
+        manualDistance: lastDistance,
         force: 0.0,
         r100: lastR100,
         r101: lastR101,
@@ -1395,8 +1382,7 @@ function setupIpcHandlers() {
   // Process Mode M20 lifecycle
   ipcMain.handle('utm:enter-process-mode', async () => {
     processModeM20Active = true;
-    lastDistance = 0; // Reset distance cache so stale values don't persist
-    console.log('✅ Process Mode (M20) activated — D52 distance reads enabled.');
+    console.log('✅ Process Mode (M20) activated.');
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
       return { success: false, message: 'Not connected to PLC' };
     }
@@ -1409,10 +1395,11 @@ function setupIpcHandlers() {
 
   ipcMain.handle('utm:leave-process-mode', async () => {
     processModeM20Active = false;
-    lastDistance = 0; // Clear cached distance when leaving process mode
-    console.log('🛑 Process Mode (M20) deactivated — D52 distance reads disabled.');
+    processRunning = false;
+    await stopProcessLogging();
+    console.log('🛑 Process Mode (M20) deactivated.');
     if (!isConnected || !modbusClient || !modbusClient.isOpen) {
-      return { success: true };
+      return { success: true, m20: false };
     }
     return await safeExecute('leave-process-mode', async () => {
       await modbusClient.writeCoil(COIL_PROCESS_MODE, false); // M20 = false

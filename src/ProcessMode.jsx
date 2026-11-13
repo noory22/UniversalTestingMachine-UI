@@ -25,11 +25,8 @@ import {
   Activity,
   AlertCircle,
   X,
-  Send,
-  Check,
   FastForward,
   Sliders,
-  RotateCw,
 } from 'lucide-react';
 
 ChartJS.register(
@@ -55,13 +52,15 @@ export default function ProcessMode() {
   const [errorMessage, setErrorMessage] = useState('');
   const [activeTab, setActiveTab] = useState('chart'); // 'chart' | 'table'
 
-  // Process parameter inputs (Speed: D54, Force Difference: R206)
-  const [speedInput, setSpeedInput] = useState('');
-  const [forceDiffInput, setForceDiffInput] = useState('');
-  const [speedLoading, setSpeedLoading] = useState(false);
-  const [forceDiffLoading, setForceDiffLoading] = useState(false);
-  const [speedStatus, setSpeedStatus] = useState(null);
-  const [forceDiffStatus, setForceDiffStatus] = useState(null);
+  // Loaded configuration profile (written prior to entering this screen)
+  const [activeConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem('selectedConfig');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const chartRef = useRef(null);
   const processStateRef = useRef(processState);
@@ -148,14 +147,26 @@ export default function ProcessMode() {
       }
     }
 
+    const handleBeforeUnload = () => {
+      if (window.api && window.api.leaveProcessMode) {
+        window.api.leaveProcessMode().catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       unsubTelemetry();
       unsubConnection();
       unsubProcess();
       unsubError();
-      // NOTE: M20 is turned OFF only by the explicit back-button / exit handler.
-      // Do NOT call leaveProcessMode() here — React unmount fires on every
-      // navigation away (including actions), which would inadvertently kill M20.
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+
+      // Turn OFF M20 on the PLC when leaving Tensile Test screen
+      if (window.api && window.api.leaveProcessMode) {
+        window.api.leaveProcessMode().catch((err) => {
+          console.error('Error leaving Process Mode (M20):', err);
+        });
+      }
     };
   }, []);
 
@@ -165,6 +176,9 @@ export default function ProcessMode() {
     try {
       if (window.api && window.api.reconnect) {
         await window.api.reconnect();
+        if (window.api.enterProcessMode) {
+          await window.api.enterProcessMode();
+        }
       }
     } catch (e) {
       console.error('Reconnect error:', e);
@@ -180,7 +194,6 @@ export default function ProcessMode() {
     try {
       setActionLoading(true);
       setDataPoints([]);
-      setTelemetry((prev) => ({ ...prev, distance: 0 }));
       const res = await window.api.startProcess();
       if (!res.success) {
         setErrorMessage(res.message || 'Failed to start testing process');
@@ -210,7 +223,6 @@ export default function ProcessMode() {
     try {
       setActionLoading(true);
       setDataPoints([]);
-      setTelemetry((prev) => ({ ...prev, distance: 0, force: 0 }));
       const res = await window.api.resetProcess();
       if (!res.success && res.message) {
         setErrorMessage(res.message);
@@ -237,66 +249,6 @@ export default function ProcessMode() {
       setErrorMessage(e.message);
     } finally {
       setActionLoading(false);
-    }
-  };
-
-  const handleSendSpeed = async () => {
-    if (!connectionStatus.connected) {
-      setErrorMessage('Not connected to PLC!');
-      return;
-    }
-    const val = parseFloat(speedInput);
-    if (isNaN(val) || val <= 0) {
-      setErrorMessage('Please enter a valid positive number for Speed (mm/s).');
-      return;
-    }
-
-    setSpeedLoading(true);
-    setSpeedStatus(null);
-    try {
-      if (window.api && window.api.sendSpeed) {
-        const res = await window.api.sendSpeed(val);
-        if (res && res.success) {
-          setSpeedStatus({ success: true, msg: 'Sent!' });
-          setTimeout(() => setSpeedStatus(null), 2500);
-        } else {
-          setErrorMessage((res && res.message) || 'Failed to write Speed to PLC (D54)');
-        }
-      }
-    } catch (err) {
-      setErrorMessage(err.message || 'Error sending Speed to PLC');
-    } finally {
-      setSpeedLoading(false);
-    }
-  };
-
-  const handleSendForceDiff = async () => {
-    if (!connectionStatus.connected) {
-      setErrorMessage('Not connected to PLC!');
-      return;
-    }
-    const val = parseInt(forceDiffInput, 10);
-    if (isNaN(val) || val <= 0) {
-      setErrorMessage('Please enter a valid positive integer for Force Difference (gf).');
-      return;
-    }
-
-    setForceDiffLoading(true);
-    setForceDiffStatus(null);
-    try {
-      if (window.api && window.api.sendForceDiff) {
-        const res = await window.api.sendForceDiff(val);
-        if (res && res.success) {
-          setForceDiffStatus({ success: true, msg: 'Sent!' });
-          setTimeout(() => setForceDiffStatus(null), 2500);
-        } else {
-          setErrorMessage((res && res.message) || 'Failed to write Force Difference to PLC (R206)');
-        }
-      }
-    } catch (err) {
-      setErrorMessage(err.message || 'Error sending Force Difference to PLC');
-    } finally {
-      setForceDiffLoading(false);
     }
   };
 
@@ -377,7 +329,9 @@ export default function ProcessMode() {
   const isTearActive = processState.tearActive;
   const isRegZReady = processState.regZ === 1;
 
-  const displayDistance = isTearActive ? '--' : (telemetry?.distance ?? 0);
+  const displayDistance = isTearActive
+    ? '--'
+    : Number(telemetry?.distance ?? telemetry?.manualDistance ?? 0).toFixed(2);
   const displayForce = isTearActive
     ? '--'
     : isRunning && dataPoints.length === 0
@@ -463,7 +417,7 @@ export default function ProcessMode() {
 
         {/* Parameter Inputs & Live Telemetry Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
-          {/* Distance Readout Card (D52) */}
+          {/* Distance Readout Card (R161) */}
           <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-green-100 text-green-700 flex items-center justify-center">
@@ -495,106 +449,46 @@ export default function ProcessMode() {
             </div>
           </div>
 
-          {/* Speed Input Card (D54) */}
-          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex flex-col justify-between">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5">
-                <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center">
-                  <FastForward className="w-3.5 h-3.5" />
-                </div>
-                <span className="text-xs font-bold text-gray-700">Speed (mm/s)</span>
+          {/* Speed Config Card (R161 — read-only, written before entering this screen) */}
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                <FastForward className="w-5 h-5" />
               </div>
-              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200" title="32-bit Float (DD54 = D54 + D55)">
-                DD54 (Float)
-              </span>
+              <div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Speed</p>
+                <div className="flex items-baseline gap-1 mt-0.5">
+                  <span className="text-2xl font-black text-indigo-700 font-mono">
+                    {activeConfig?.speed !== undefined ? Number(activeConfig.speed).toFixed(1) : '--'}
+                  </span>
+                  <span className="text-xs font-bold text-gray-500">mm/s</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="number"
-                step="any"
-                min="0"
-                placeholder="Range: 1–10"
-                value={speedInput}
-                onChange={(e) => setSpeedInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSendSpeed();
-                }}
-                disabled={isRunning || !isConnected || speedLoading}
-                className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-400"
-              />
-              <button
-                onClick={handleSendSpeed}
-                disabled={isRunning || !isConnected || speedLoading || !speedInput.trim()}
-                className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-sm transition-all cursor-pointer ${
-                  speedStatus?.success
-                    ? 'bg-emerald-600 text-white'
-                    : isRunning || !isConnected || !speedInput.trim()
-                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
-                    : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:shadow-md'
-                }`}
-                title="Send 32-bit Float Speed to PLC registers DD54 (D54+D55)"
-              >
-                {speedLoading ? (
-                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                ) : speedStatus?.success ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
-                <span>{speedStatus?.success ? 'Sent' : 'Send'}</span>
-              </button>
-            </div>
+            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
+              DD54
+            </span>
           </div>
 
-          {/* Force Difference Input Card (R206) */}
-          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex flex-col justify-between">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5">
-                <div className="w-6 h-6 rounded-lg bg-cyan-100 text-cyan-700 flex items-center justify-center">
-                  <Sliders className="w-3.5 h-3.5" />
-                </div>
-                <span className="text-xs font-bold text-gray-700">Force Diff (gf)</span>
+          {/* Force Diff Config Card (R206 — read-only, written before entering this screen) */}
+          <div className="bg-white/75 backdrop-blur-md rounded-2xl border border-white/50 p-3.5 shadow-lg flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-100 text-cyan-700 flex items-center justify-center">
+                <Sliders className="w-5 h-5" />
               </div>
-              <span className="px-1.5 py-0.5 text-[10px] font-bold bg-cyan-50 text-cyan-700 rounded border border-cyan-200">
-                R206
-              </span>
+              <div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Force Diff</p>
+                <div className="flex items-baseline gap-1 mt-0.5">
+                  <span className="text-2xl font-black text-cyan-700 font-mono">
+                    {activeConfig?.forceDiff !== undefined ? Number(activeConfig.forceDiff) : '--'}
+                  </span>
+                  <span className="text-xs font-bold text-gray-500">gf</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="number"
-                step="1"
-                min="0"
-                placeholder="Range: 10–10000"
-                value={forceDiffInput}
-                onChange={(e) => setForceDiffInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSendForceDiff();
-                }}
-                disabled={isRunning || !isConnected || forceDiffLoading}
-                className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-400"
-              />
-              <button
-                onClick={handleSendForceDiff}
-                disabled={isRunning || !isConnected || forceDiffLoading || !forceDiffInput.trim()}
-                className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-sm transition-all cursor-pointer ${
-                  forceDiffStatus?.success
-                    ? 'bg-emerald-600 text-white'
-                    : isRunning || !isConnected || !forceDiffInput.trim()
-                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
-                    : 'bg-cyan-600 hover:bg-cyan-700 text-white hover:shadow-md'
-                }`}
-                title="Send force difference to PLC register R206"
-              >
-                {forceDiffLoading ? (
-                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                ) : forceDiffStatus?.success ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
-                <span>{forceDiffStatus?.success ? 'Sent' : 'Send'}</span>
-              </button>
-            </div>
+            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-cyan-50 text-cyan-700 rounded border border-cyan-200">
+              R206
+            </span>
           </div>
         </div>
 

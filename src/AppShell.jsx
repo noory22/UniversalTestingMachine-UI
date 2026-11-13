@@ -252,9 +252,6 @@ const AppShell = () => {
                             if (item.action === 'manual' && window.api && window.api.manual) {
                               window.api.manual().catch((e) => console.error(e));
                             }
-                            if (item.mode === 'tensile' && window.api && window.api.enterProcessMode) {
-                              window.api.enterProcessMode().catch((e) => console.error(e));
-                            }
                             if (item.mode === 'compression' && window.api && window.api.enterCompressionMode) {
                               window.api.enterCompressionMode().catch((e) => console.error(e));
                             }

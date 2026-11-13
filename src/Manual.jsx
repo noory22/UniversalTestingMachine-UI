@@ -375,31 +375,6 @@ const Manual = () => {
   return (
     <div className="p-4 md:p-6 select-none flex flex-col justify-between flex-1">
       <div className="w-full max-w-7xl mx-auto flex-1 flex flex-col">
-        {/* Sensor & Sub-status Bar */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-bold text-slate-700">Hardware Interlocks & Sensors:</span>
-            {/* X1 Home Limit Sensor Badge */}
-            <div
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border shadow-xs transition-colors ${
-                x1Active
-                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold'
-                  : 'bg-slate-100 text-slate-600 border-slate-200 font-medium'
-              }`}
-              title="X1 Hardware Input: Limit / Homing Sensor Status"
-            >
-              <span className={`w-2 h-2 rounded-full ${x1Active ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`}></span>
-              <span className="text-xs font-semibold tracking-wide">
-                X1 Sensor: {x1Active ? 'AT HOME (TRIGGERED)' : 'OPEN'}
-              </span>
-            </div>
-          </div>
-
-          <div className="text-xs font-medium text-slate-500">
-            Jogging & Diagnostics Panel
-          </div>
-        </div>
-
         {/* Error notification banner if any */}
         {errorMessage && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-center justify-between text-red-700 shadow-sm animate-fade-in">
@@ -416,9 +391,9 @@ const Manual = () => {
           </div>
         )}
 
-        {/* Real-time Telemetry Cards (D2 & R154) */}
+        {/* Real-time Telemetry Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-6">
-          {/* Distance Sensor Card (D2) */}
+          {/* Distance Sensor Card */}
           <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/60 p-5 md:p-6 flex items-center space-x-4 md:space-x-5 transition-all hover:shadow-2xl">
             <div className="p-3.5 bg-emerald-100 text-emerald-600 rounded-2xl shadow-inner">
               <Move className="w-7 h-7" />
@@ -426,9 +401,6 @@ const Manual = () => {
             <div className="flex-1">
               <div className="flex items-center justify-between">
                 <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">Distance</p>
-                <span className="px-2 py-0.5 text-[11px] font-bold bg-emerald-50 text-emerald-700 rounded-md border border-emerald-200">
-                  D2 (6002)
-                </span>
               </div>
               <div className="mt-1 flex items-baseline space-x-2">
                 <span className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
@@ -440,7 +412,7 @@ const Manual = () => {
             </div>
           </div>
 
-          {/* Force Load Cell Card (R154) */}
+          {/* Force Load Cell Card */}
           <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/60 p-5 md:p-6 flex items-center space-x-4 md:space-x-5 transition-all hover:shadow-2xl">
             <div className="p-3.5 bg-blue-100 text-blue-600 rounded-2xl shadow-inner">
               <Zap className="w-7 h-7" />
@@ -448,9 +420,6 @@ const Manual = () => {
             <div className="flex-1">
               <div className="flex items-center justify-between">
                 <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">Force</p>
-                <span className="px-2 py-0.5 text-[11px] font-bold bg-blue-50 text-blue-700 rounded-md border border-blue-200">
-                  R154 (32-bit Float)
-                </span>
               </div>
               <div className="mt-1 flex items-baseline space-x-2">
                 <span className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
@@ -467,7 +436,7 @@ const Manual = () => {
             </div>
           </div>
 
-          {/* Manual Mode Master State Card (M10) */}
+          {/* Manual Mode Master State Card */}
           <div className="bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-white/60 p-5 md:p-6 flex items-center space-x-4 md:space-x-5 transition-all hover:shadow-2xl">
             <div className="p-3.5 bg-amber-100 text-amber-600 rounded-2xl shadow-inner">
               <Activity className="w-7 h-7" />
@@ -475,9 +444,6 @@ const Manual = () => {
             <div className="flex-1">
               <div className="flex items-center justify-between">
                 <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">Master Mode</p>
-                <span className="px-2 py-0.5 text-[11px] font-bold bg-amber-50 text-amber-700 rounded-md border border-amber-200">
-                  M10 (2010)
-                </span>
               </div>
               <div className="mt-1 flex items-center space-x-2">
                 <span className="text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight">
@@ -497,14 +463,14 @@ const Manual = () => {
 
         {/* Control Panels: Movement Control & Homing Control */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1">
-          {/* Movement Control Panel (Motor Up M11 & Motor Down M12) */}
+          {/* Movement Control Panel */}
           <div className="lg:col-span-2 bg-white/85 backdrop-blur-md rounded-3xl shadow-xl border border-white/70 p-6 md:p-8 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-100">
                 <div>
                   <h3 className="text-xl font-bold text-slate-800">Movement Control</h3>
                   <p className="text-sm text-slate-500 font-medium">
-                    Control motor direction with mutual exclusivity (M11 / M12)
+                    Control motor direction with mutual exclusivity
                   </p>
                 </div>
                 <div className="px-3 py-1 bg-slate-100 rounded-xl text-xs font-semibold text-slate-600">
@@ -514,7 +480,7 @@ const Manual = () => {
 
               {/* Circular Action Buttons */}
               <div className="flex flex-col sm:flex-row items-center justify-center gap-10 sm:gap-16 py-6 md:py-10">
-                {/* Motor Up (M11) Button */}
+                {/* Motor Up Button */}
                 <div className="flex flex-col items-center">
                   <button
                     onClick={handleMotorUp}
@@ -533,14 +499,14 @@ const Manual = () => {
                     )}
                   </button>
                   <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
-                    MOTOR UP (M11)
+                    MOTOR UP
                   </span>
                   <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
                     {controls.motorUp ? 'RUNNING' : 'IDLE'}
                   </span>
                 </div>
 
-                {/* Motor Down (M12) Button */}
+                {/* Motor Down Button */}
                 <div className="flex flex-col items-center">
                   <button
                     onClick={handleMotorDown}
@@ -559,7 +525,7 @@ const Manual = () => {
                     )}
                   </button>
                   <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
-                    MOTOR DOWN (M12)
+                    MOTOR DOWN
                   </span>
                   <span className={`text-[11px] font-semibold uppercase tracking-wider ${x1Active ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
                     {controls.motorDown ? 'RUNNING' : x1Active ? 'LOCKED (AT HOME)' : 'IDLE'}
@@ -631,13 +597,13 @@ const Manual = () => {
             </div>
           </div>
 
-          {/* Homing Control Panel (M13) */}
+          {/* Homing Control Panel */}
           <div className="bg-white/85 backdrop-blur-md rounded-3xl shadow-xl border border-white/70 p-6 md:p-8 flex flex-col justify-between">
             <div>
               <div className="mb-6 pb-4 border-b border-slate-100">
                 <h3 className="text-xl font-bold text-slate-800">Homing Control</h3>
                 <p className="text-sm text-slate-500 font-medium">
-                  Trigger automatic crosshead homing sequence (M13)
+                  Trigger automatic crosshead homing sequence
                 </p>
               </div>
 
@@ -664,7 +630,7 @@ const Manual = () => {
                   )}
                 </button>
                 <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
-                  HOMING (M13)
+                  HOMING
                 </span>
                 <span className={`text-[11px] font-semibold uppercase tracking-wider ${x1Active ? 'text-emerald-600 font-bold' : 'text-slate-400'}`}>
                   {isHomingActive ? 'HOMING ACTIVE' : x1Active ? 'AT HOME (X1)' : 'READY'}
@@ -695,4 +661,3 @@ const Manual = () => {
 };
 
 export default Manual;
-
