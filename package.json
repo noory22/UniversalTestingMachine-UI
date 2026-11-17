@@ -1,8 +1,7 @@
 {
   "name": "utm",
-  "version": "1.0.2 ",
+  "version": "1.0.2",
   "description": "Universal Testing Machine",
-  "main": "main.js",
   "author": {
     "name": "Revive Medical Technologies"
   },
@@ -13,129 +12,40 @@
     "url": "https://github.com/noory22/UniversalTestingMachine-UI.git"
   },
   "scripts": {
-    "dev": "node dev.js",
+    "dev": "tauri dev",
+    "dev:vite": "vite --config vite.renderer.config.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build": "vite build --config vite.renderer.config.mjs",
     "build:renderer": "vite build --config vite.renderer.config.mjs",
-    "build:preload": "vite build --config vite.preload.config.mjs",
-    "build": "npm run build:preload && npm run build:renderer",
-    "start": "node dev.js",
-    "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win --x64",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "publish": "npm run build && electron-builder --publish always",
-    "postinstall": "electron-builder install-app-deps",
-    "rebuild": "electron-rebuild -f",
-    "clean": "rimraf dist .vite"
+    "clean": "rimraf dist .vite src-tauri/target"
   },
   "keywords": [
     "utm",
     "universal-testing-machine",
-    "electron",
+    "tauri",
+    "rust",
     "react",
     "modbus"
   ],
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.12",
+    "@tauri-apps/api": "^2.12.5",
+    "@tauri-apps/cli": "^2.12.5",
     "@vitejs/plugin-react": "^5.0.0",
     "cross-env": "^10.1.0",
-    "electron": "^28.3.3",
-    "electron-builder": "^26.8.1",
-    "electron-rebuild": "^3.2.9",
     "rimraf": "^5.0.10",
     "vite": "^5.4.19"
   },
   "dependencies": {
-    "@serialport/bindings-cpp": "^13.0.1",
-    "@serialport/parser-readline": "^13.0.0",
-    "@tailwindcss/vite": "^4.1.12",
-    "@vitejs/plugin-react": "^5.0.0",
     "chart.js": "^4.5.1",
-    "electron-updater": "^6.8.3",
     "lucide-react": "^0.540.0",
-    "modbus-serial": "^8.0.23",
     "react": "^19.1.1",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.1",
     "recharts": "^3.1.2",
-    "serialport": "^13.0.0",
     "tailwindcss": "^4.1.12"
-  },
-  "build": {
-    "appId": "com.revivemedical.utm",
-    "productName": "UTM",
-    "copyright": "Copyright © 2026 Revive Medical Technologies",
-    "publish": {
-      "provider": "github",
-      "owner": "noory22",
-      "repo": "UniversalTestingMachine-UI",
-      "private": false,
-      "releaseType": "release"
-    },
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      ".vite/**/*",
-      ".vite/build/**/*",
-      "src/**/*",
-      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
-      "!**/node_modules/*.d.ts",
-      "!**/node_modules/.bin",
-      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
-      "!.editorconfig",
-      "!**/._*",
-      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
-      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
-      "!**/{appveyor.yml,.travis.yml,circle.yml}",
-      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
-    ],
-    "extraResources": [
-      {
-        "from": "src/assets",
-        "to": "assets",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "src/assets/icon.ico",
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "verifyUpdateCodeSignature": false,
-      "signAndEditExecutable": false,
-      "requestedExecutionLevel": "asInvoker"
-    },
-    "asarUnpack": [
-      "**/node_modules/@serialport/**/*",
-      "**/node_modules/modbus-serial/**/*",
-      "**/node_modules/@serialport/bindings-cpp/**/*",
-      "**/node_modules/@serialport/stream/**/*"
-    ],
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "UTM",
-      "installerIcon": "src/assets/icon.ico",
-      "uninstallerIcon": "src/assets/icon.ico",
-      "installerHeaderIcon": "src/assets/icon.ico",
-      "deleteAppDataOnUninstall": false,
-      "perMachine": true,
-      "guid": "com.revivemedical.utm"
-    }
   }
 }

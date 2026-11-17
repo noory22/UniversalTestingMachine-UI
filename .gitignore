@@ -21,3 +21,7 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+
