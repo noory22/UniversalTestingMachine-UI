@@ -906,7 +906,7 @@ function startCompressionLogging() {
     activeCompCsvPath = path.join(logsDir, filename);
 
     activeCompCsvStream = fs.createWriteStream(activeCompCsvPath, { flags: 'w' });
-    activeCompCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    activeCompCsvStream.write('Timestamp,Distance(mm),Force(gf),Force(N)\n');
     console.log(`[CSV] Started compression logging to ${activeCompCsvPath}`);
     return { success: true, filename };
   } catch (err) {
@@ -936,7 +936,7 @@ function startProcessLogging() {
     forceAccumulator = [];
 
     activeCsvStream = fs.createWriteStream(activeCsvPath, { flags: 'w' });
-    activeCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    activeCsvStream.write('Timestamp,Distance(mm),Force(gf),Force(N)\n');
     console.log(`[CSV] Started logging to ${activeCsvPath}`);
     return { success: true, filename };
   } catch (err) {

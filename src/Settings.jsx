@@ -62,7 +62,7 @@ export default function Settings() {
       if (window.api.onTelemetry) {
         unsubTelemetry = window.api.onTelemetry((data) => {
           setTelemetry({
-            force: data?.force !== undefined ? `${Number(data.force).toFixed(3)} mN` : '--',
+            force: data?.force !== undefined ? `${Number(data.force).toFixed(3)} gf` : '--',
             r100: data?.r100 !== undefined ? data.r100 : '--',
             r101: data?.r101 !== undefined ? data.r101 : '--',
           });

@@ -389,7 +389,8 @@ const COIL_TARE = 2041;          // M9: Tare (Tensile M20 & Compression M30)
 
 // Compression Test Coils & Registers
 const COIL_COMPRESSION_MODE = 2030; // M30: Compression mode master (Fatek offset 2000 + 30)
-const COIL_COMP_START = COIL_START; // M6: Compression Start
+const COIL_COMP_START = 
+COIL_START; // M6: Compression Start
 const COIL_COMP_RESET = COIL_RESET; // M7: Compression Reset
 const COIL_COMP_STOP = COIL_STOP;   // M8: Compression Stop
 const COIL_COMP_TARE = COIL_TARE;   // M9: Compression Tare
@@ -906,7 +907,7 @@ function startCompressionLogging() {
     activeCompCsvPath = path.join(logsDir, filename);
 
     activeCompCsvStream = fs.createWriteStream(activeCompCsvPath, { flags: 'w' });
-    activeCompCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    activeCompCsvStream.write('Timestamp,Distance(mm),Force(gf),Force(N)\n');
     console.log(`[CSV] Started compression logging to ${activeCompCsvPath}`);
     return { success: true, filename };
   } catch (err) {
@@ -936,7 +937,7 @@ function startProcessLogging() {
     forceAccumulator = [];
 
     activeCsvStream = fs.createWriteStream(activeCsvPath, { flags: 'w' });
-    activeCsvStream.write('Timestamp,Distance(mm),Force(mN),Force(N)\n');
+    activeCsvStream.write('Timestamp,Distance(mm),Force(gf),Force(N)\n');
     console.log(`[CSV] Started logging to ${activeCsvPath}`);
     return { success: true, filename };
   } catch (err) {

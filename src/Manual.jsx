@@ -12,7 +12,8 @@ import {
   Square,
   Activity,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Scale
 } from 'lucide-react';
 
 const Manual = () => {
@@ -40,6 +41,8 @@ const Manual = () => {
   const [powerActive, setPowerActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
   const [x1Active, setX1Active] = useState(false);
+  const [tareActive, setTareActive] = useState(false);
+  const [tareLoading, setTareLoading] = useState(false);
 
   // 1. Initial connection check and manual mode activation on mount
   useEffect(() => {
@@ -109,6 +112,10 @@ const Manual = () => {
         const isX1 = data.x1 !== undefined ? Boolean(data.x1) : false;
         if (data.x1 !== undefined) {
           setX1Active(isX1);
+        }
+
+        if (data.tearActive !== undefined) {
+          setTareActive(Boolean(data.tearActive));
         }
 
         // Hardware state synchronization
@@ -322,6 +329,23 @@ const Manual = () => {
       });
   };
 
+  // Handle Tare (M9) - 1 second pulse to zero force reading matching Tensile Test
+  const handleTare = async () => {
+    if (!connectionStatus.connected || isTareActive || isHomingActive) return;
+    try {
+      setTareLoading(true);
+      const res = await window.api.activateTare();
+      if (res && !res.success && res.message) {
+        setErrorMessage(res.message);
+      }
+    } catch (e) {
+      console.error('Tare error:', e.message);
+      setErrorMessage(e.message || 'Tare failed');
+    } finally {
+      setTareLoading(false);
+    }
+  };
+
   // Reconnect helper
   const handleReconnect = async () => {
     try {
@@ -365,12 +389,14 @@ const Manual = () => {
     navigate('/');
   };
 
-  // Active & disabled states matching CTTM-VD logic and X1 Homing interlock
+  // Active & disabled states matching CTTM-VD logic and X1 Homing / Tare interlock
   const isHomingActive = Boolean(controls.homing && !x1Active);
-  const isMovementDisabled = !connectionStatus.connected || isHomingActive;
+  const isTareActive = Boolean(tareActive || tareLoading);
+  const isMovementDisabled = !connectionStatus.connected || isHomingActive || isTareActive;
   const isMotorUpDisabled = isMovementDisabled || controls.motorDown;
   const isMotorDownDisabled = isMovementDisabled || controls.motorUp || x1Active;
-  const isHomingButtonDisabled = !connectionStatus.connected || isHomingActive || x1Active;
+  const isHomingButtonDisabled = !connectionStatus.connected || isHomingActive || x1Active || isTareActive;
+  const isTareButtonDisabled = !connectionStatus.connected || isTareActive || isHomingActive;
 
   return (
     <div className="p-4 md:p-6 select-none flex flex-col justify-between flex-1">
@@ -425,7 +451,7 @@ const Manual = () => {
                 <span className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
                   {force === '--' ? '--' : Number(force).toFixed(3)}
                 </span>
-                <span className="text-sm font-bold text-slate-500">mN</span>
+                <span className="text-sm font-bold text-slate-500">gf</span>
                 {force !== '--' && (
                   <span className="text-xs font-semibold text-slate-400">
                     ({(Number(force) / 1000).toFixed(6)} N)
@@ -597,61 +623,128 @@ const Manual = () => {
             </div>
           </div>
 
-          {/* Homing Control Panel */}
-          <div className="bg-white/85 backdrop-blur-md rounded-3xl shadow-xl border border-white/70 p-6 md:p-8 flex flex-col justify-between">
-            <div>
-              <div className="mb-6 pb-4 border-b border-slate-100">
-                <h3 className="text-xl font-bold text-slate-800">Homing Control</h3>
-                <p className="text-sm text-slate-500 font-medium">
-                  Trigger automatic crosshead homing sequence
-                </p>
+          {/* Right Column: Homing & Tare Controls */}
+          <div className="flex flex-col gap-6">
+            {/* 1. Homing Control Panel (Above) */}
+            <div className="bg-white/85 backdrop-blur-md rounded-3xl shadow-xl border border-white/70 p-5 md:p-6 flex-1 flex flex-col justify-between">
+              <div>
+                <div className="mb-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800">Homing Control</h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Trigger automatic crosshead homing sequence
+                    </p>
+                  </div>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 text-blue-700 rounded-md border border-blue-200">
+                    M13
+                  </span>
+                </div>
+
+                {/* Homing Circular Button matching CTTM-VD */}
+                <div className="flex flex-col items-center justify-center py-2 sm:py-3">
+                  <button
+                    onClick={handleHoming}
+                    disabled={isHomingButtonDisabled}
+                    className={`relative w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 transition-all duration-300 shadow-md flex items-center justify-center ${
+                      isHomingButtonDisabled
+                        ? 'bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed opacity-60 shadow-none'
+                        : isHomingActive
+                        ? 'bg-blue-600 border-blue-700 text-white shadow-blue-500/50'
+                        : 'bg-white border-slate-300 text-slate-700 hover:border-slate-400 hover:scale-105'
+                    }`}
+                  >
+                    <RotateCw
+                      className={`w-9 h-9 sm:w-10 sm:h-10 transition-all ${
+                        isHomingActive ? 'animate-spin text-white' : 'text-slate-700'
+                      }`}
+                    />
+                    {isHomingActive && connectionStatus.connected && (
+                      <div className="absolute -inset-2 bg-blue-500 rounded-full animate-ping opacity-35 pointer-events-none"></div>
+                    )}
+                  </button>
+                  <span className="mt-2.5 font-bold text-xs tracking-wide text-slate-800">
+                    HOMING
+                  </span>
+                  <span className={`text-[10px] font-semibold uppercase tracking-wider ${x1Active ? 'text-emerald-600 font-bold' : 'text-slate-400'}`}>
+                    {isHomingActive ? 'HOMING ACTIVE' : x1Active ? 'AT HOME (X1)' : 'READY'}
+                  </span>
+                </div>
               </div>
 
-              {/* Homing Circular Button matching CTTM-VD */}
-              <div className="flex flex-col items-center justify-center py-6 md:py-10">
-                <button
-                  onClick={handleHoming}
-                  disabled={isHomingButtonDisabled}
-                  className={`relative w-28 h-28 sm:w-32 sm:h-32 rounded-full border-4 transition-all duration-300 shadow-xl flex items-center justify-center ${
-                    isHomingButtonDisabled
-                      ? 'bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed opacity-60 shadow-none'
-                      : isHomingActive
-                      ? 'bg-blue-600 border-blue-700 text-white shadow-blue-500/50'
-                      : 'bg-white border-slate-300 text-slate-700 hover:border-slate-400 hover:scale-105'
-                  }`}
-                >
-                  <RotateCw
-                    className={`w-12 h-12 sm:w-14 sm:h-14 transition-all ${
-                      isHomingActive ? 'animate-spin text-white' : 'text-slate-700'
-                    }`}
-                  />
-                  {isHomingActive && connectionStatus.connected && (
-                    <div className="absolute -inset-2 bg-blue-500 rounded-full animate-ping opacity-35 pointer-events-none"></div>
-                  )}
-                </button>
-                <span className="mt-4 font-bold text-sm tracking-wide text-slate-800">
-                  HOMING
+              {/* Homing Instructions & Safety Note */}
+              <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-200/60 text-center">
+                <span className={`text-xs font-bold ${isHomingActive ? 'text-blue-600' : x1Active ? 'text-emerald-600' : 'text-slate-700'}`}>
+                  {isHomingActive
+                    ? 'HOMING SEQUENCE IN PROGRESS'
+                    : x1Active
+                    ? 'MACHINE ALREADY AT HOME POSITION'
+                    : 'HOMING READY'}
                 </span>
-                <span className={`text-[11px] font-semibold uppercase tracking-wider ${x1Active ? 'text-emerald-600 font-bold' : 'text-slate-400'}`}>
-                  {isHomingActive ? 'HOMING ACTIVE' : x1Active ? 'AT HOME (X1)' : 'READY'}
-                </span>
+                <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
+                  {x1Active
+                    ? 'Actuator is resting at base home switch (X1 active). Homing trigger is disabled.'
+                    : 'Stops all manual jogging and returns actuator to base zero position.'}
+                </p>
               </div>
             </div>
 
-            {/* Homing Instructions & Safety Note */}
-            <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/60 text-center">
-              <span className={`text-sm font-bold ${isHomingActive ? 'text-blue-600' : x1Active ? 'text-emerald-600' : 'text-slate-700'}`}>
-                {isHomingActive
-                  ? 'HOMING SEQUENCE IN PROGRESS'
-                  : x1Active
-                  ? 'MACHINE ALREADY AT HOME POSITION'
-                  : 'HOMING READY'}
-              </span>
-              <p className="text-xs text-slate-500 mt-1 font-medium">
-                {x1Active
-                  ? 'Actuator is resting at base home switch (X1 active). Homing trigger is disabled.'
-                  : 'Stops all manual jogging and returns actuator to base zero position.'}
-              </p>
+            {/* 2. Tare Control Panel (Below) */}
+            <div className="bg-white/85 backdrop-blur-md rounded-3xl shadow-xl border border-white/70 p-5 md:p-6 flex-1 flex flex-col justify-between">
+              <div>
+                <div className="mb-4 pb-3 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800">Tare Control</h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Zero load cell force reading (Coil M9)
+                    </p>
+                  </div>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-50 text-amber-700 rounded-md border border-amber-200">
+                    M9
+                  </span>
+                </div>
+
+                {/* Tare Circular Button */}
+                <div className="flex flex-col items-center justify-center py-2 sm:py-3">
+                  <button
+                    onClick={handleTare}
+                    disabled={isTareButtonDisabled}
+                    className={`relative w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 transition-all duration-300 shadow-md flex items-center justify-center ${
+                      isTareButtonDisabled
+                        ? 'bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed opacity-60 shadow-none'
+                        : isTareActive
+                        ? 'bg-gradient-to-r from-amber-500 to-yellow-500 border-amber-600 text-white shadow-amber-500/50'
+                        : 'bg-white border-amber-300 text-amber-600 hover:border-amber-400 hover:scale-105'
+                    }`}
+                  >
+                    <Scale
+                      className={`w-9 h-9 sm:w-10 sm:h-10 transition-all ${
+                        isTareActive ? 'animate-bounce text-white' : 'text-amber-600'
+                      }`}
+                    />
+                    {isTareActive && connectionStatus.connected && (
+                      <div className="absolute -inset-2 bg-amber-400 rounded-full animate-ping opacity-35 pointer-events-none"></div>
+                    )}
+                  </button>
+                  <span className="mt-2.5 font-bold text-xs tracking-wide text-slate-800">
+                    TARE
+                  </span>
+                  <span className={`text-[10px] font-semibold uppercase tracking-wider ${isTareActive ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
+                    {isTareActive ? 'TARING (M9)...' : 'READY'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Tare Instructions & Status Note */}
+              <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-200/60 text-center">
+                <span className={`text-xs font-bold ${isTareActive ? 'text-amber-600' : 'text-slate-700'}`}>
+                  {isTareActive ? 'TARING LOAD CELL (1s PULSE)' : 'SENSOR TARE READY'}
+                </span>
+                <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
+                  {isTareActive
+                    ? 'Zeroing load cell offset in PLC register...'
+                    : 'Fires 1-second pulse to coil M9 matching Tensile Test tare.'}
+                </p>
+              </div>
             </div>
           </div>
         </div>

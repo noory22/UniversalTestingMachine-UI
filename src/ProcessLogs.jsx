@@ -222,7 +222,7 @@ export default function ProcessLogs() {
   const chartData = {
     datasets: [
       {
-        label: 'Force (mN)',
+        label: 'Force (gf)',
         data: (logDetails?.points || []).map((pt) => ({ x: pt.distance, y: pt.force })),
         borderColor: '#2563eb',
         backgroundColor: 'rgba(37, 99, 235, 0.08)',
@@ -254,7 +254,7 @@ export default function ProcessLogs() {
       y: {
         title: {
           display: true,
-          text: 'Force (mN)',
+          text: 'Force (gf)',
           font: { weight: 'bold', size: 13 },
           color: '#475569',
         },
@@ -269,7 +269,7 @@ export default function ProcessLogs() {
       },
       tooltip: {
         callbacks: {
-          label: (ctx) => `Force: ${ctx.parsed.y.toFixed(3)} mN at ${ctx.parsed.x.toFixed(1)} mm`,
+          label: (ctx) => `Force: ${ctx.parsed.y.toFixed(3)} gf at ${ctx.parsed.x.toFixed(1)} mm`,
         },
       },
     },
@@ -435,7 +435,7 @@ export default function ProcessLogs() {
                 </div>
                 <div className="text-right">
                   <span className="text-base font-bold text-blue-700 font-mono">{peakForce.toFixed(3)}</span>
-                  <span className="text-xs font-semibold text-gray-500 ml-1">mN</span>
+                  <span className="text-xs font-semibold text-gray-500 ml-1">gf</span>
                 </div>
               </div>
 
@@ -460,7 +460,7 @@ export default function ProcessLogs() {
                   </div>
                   <div className="text-right">
                     <span className="text-base font-bold text-indigo-700 font-mono">{avgForce.toFixed(3)}</span>
-                    <span className="text-xs font-semibold text-gray-500 ml-1">mN</span>
+                    <span className="text-xs font-semibold text-gray-500 ml-1">gf</span>
                   </div>
                 </div>
               )}

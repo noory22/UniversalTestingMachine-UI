@@ -270,7 +270,7 @@ export default function ProcessMode() {
   const chartData = {
     datasets: [
       {
-        label: 'Force (mN)',
+        label: 'Force (gf)',
         data: dataPoints.map((pt) => ({ x: pt.distance, y: pt.force })),
         borderColor: '#2563eb',
         backgroundColor: 'rgba(37, 99, 235, 0.08)',
@@ -303,7 +303,7 @@ export default function ProcessMode() {
       y: {
         title: {
           display: true,
-          text: 'Force (mN)',
+          text: 'Force (gf)',
           font: { weight: 'bold', size: 13 },
           color: '#475569',
         },
@@ -318,7 +318,7 @@ export default function ProcessMode() {
       },
       tooltip: {
         callbacks: {
-          label: (ctx) => `Force: ${ctx.parsed.y.toFixed(3)} mN at ${ctx.parsed.x.toFixed(1)} mm`,
+          label: (ctx) => `Force: ${ctx.parsed.y.toFixed(3)} gf at ${ctx.parsed.x.toFixed(1)} mm`,
         },
       },
     },
@@ -443,7 +443,7 @@ export default function ProcessMode() {
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Force</p>
                 <div className="flex items-baseline gap-1 mt-0.5">
                   <span className="text-2xl font-black text-blue-700 font-mono">{displayForce}</span>
-                  <span className="text-xs font-bold text-gray-500">mN</span>
+                  <span className="text-xs font-bold text-gray-500">gf</span>
                 </div>
               </div>
             </div>
