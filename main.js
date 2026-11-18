@@ -208,10 +208,17 @@ async function sendCompressionConfig(config) {
     await delay(30);
 
     // Turn ON Compression Mode Master Coil M30 (2030)
-    compressionM30Active = true;
+    compressionModeActive = true;
+    compressionRunning = false;
+    compressionTareActive = false;
     try {
       await modbusClient.writeCoil(COIL_COMPRESSION_MODE, true);
-    } catch (e) {}
+      await delay(25);
+      console.log('✅ Compression Mode (M30) turned ON after writing configuration.');
+    } catch (e) {
+      console.error('Failed to write COIL_COMPRESSION_MODE (M30):', e.message);
+      throw e;
+    }
 
     return {
       success: true,
@@ -354,7 +361,6 @@ const COIL_MOTOR_UP = 2011;      // M11: Motor Up
 const COIL_MOTOR_DOWN = 2012;    // M12: Motor Down
 const COIL_HOMING = 2013;        // M13: Homing
 const REG_FORCE = 154;            // R154 (+ R155): Force (32-bit Float LE, used across all modes)
-const REG_MANUAL_FORCE = 154;     // Backwards-compatibility alias
 const INPUT_X1 = 1001;           // X1: Homing / Lower limit switch (Fatek offset 1000 + 1)
 
 let manualModeActive = false;
@@ -636,32 +642,23 @@ async function processModbusLoop() {
         } catch (e) {}
 
       } else if (compressionModeActive || compressionRunning) {
-        // Read Compression Distance (D104 + D105) & Force (R90)
-        try {
-          const respCompD = await modbusClient.readHoldingRegisters(REG_COMP_DISTANCE, 2);
-          if (respCompD && respCompD.data && respCompD.data.length >= 2) {
-            const d104 = respCompD.data[0];
-            const d105 = respCompD.data[1];
-            const buf = Buffer.alloc(4);
-            buf.writeUInt16LE(d104, 0);
-            buf.writeUInt16LE(d105, 2);
-            const d = buf.readFloatLE(0);
-            if (!isNaN(d)) {
-              compDistance = d;
-              lastCompDistance = compDistance;
-              cycleSuccess = true;
-            }
-          }
-        } catch (e) {}
-
+        // Read Compression Force: R90
         try {
           const respCompF = await modbusClient.readHoldingRegisters(REG_COMP_FORCE, 1);
           if (respCompF && respCompF.data && respCompF.data.length > 0) {
-            compForce = respCompF.data[0];
+            const rawF = respCompF.data[0];
+            const f = rawF > 32767 ? rawF - 65536 : rawF;
+            compForce = f;
             lastCompForce = compForce;
             cycleSuccess = true;
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error('[R90] Modbus read error at address', REG_COMP_FORCE, ':', e.message);
+        }
+
+        // Real-time Compression Distance: unified with R161
+        compDistance = distance;
+        lastCompDistance = compDistance;
       }
 
       // 3d. Settings / Calibration Registers: R100 & R101 (read on slow cycle every ~300ms)

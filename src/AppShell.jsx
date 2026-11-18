@@ -252,9 +252,6 @@ const AppShell = () => {
                             if (item.action === 'manual' && window.api && window.api.manual) {
                               window.api.manual().catch((e) => console.error(e));
                             }
-                            if (item.mode === 'compression' && window.api && window.api.enterCompressionMode) {
-                              window.api.enterCompressionMode().catch((e) => console.error(e));
-                            }
                             navigate(item.path);
                             setSidebarOpen(false);
                           }}
@@ -326,7 +323,12 @@ const AppShell = () => {
               {!isDashboard && (
                 <button
                   type="button"
-                  onClick={() => navigate('/')}
+                  onClick={() => {
+                    if (location.pathname === '/compression-test' && window.api?.leaveCompressionMode) {
+                      window.api.leaveCompressionMode().catch((err) => console.error('Error leaving Compression Mode (M30):', err));
+                    }
+                    navigate('/');
+                  }}
                   className="p-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
                   title="Return to Dashboard"
                 >

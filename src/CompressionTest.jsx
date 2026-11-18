@@ -96,9 +96,11 @@ export default function CompressionTest() {
 
     fetchInitial();
 
-    // NOTE: M30 is turned ON by the Main Menu button click before navigation.
-    // We do NOT re-trigger enterCompressionMode here to avoid toggling M30 on
-    // every React mount/re-render.
+    if (window.api && window.api.enterCompressionMode) {
+      window.api.enterCompressionMode().catch((err) => {
+        console.error('Error ensuring Compression Mode on mount:', err);
+      });
+    }
 
     let unsubTelemetry = () => {};
     let unsubConnection = () => {};
@@ -108,11 +110,13 @@ export default function CompressionTest() {
         unsubTelemetry = window.api.onTelemetry((data) => {
           if (!isMounted || !data) return;
 
-          const liveForce = typeof data.compForce === 'number' ? data.compForce : 0;
-          setTelemetry({
-            compDistance: data.compDistance !== undefined ? data.compDistance : 0,
+          const liveForce = (data.compForce !== undefined && data.compForce !== null)
+            ? Number(data.compForce)
+            : 0;
+          setTelemetry((prev) => ({
+            compDistance: data.compDistance !== undefined ? data.compDistance : prev.compDistance,
             compForce: liveForce,
-          });
+          }));
 
           if (data.compressionRunning !== undefined) {
             setTestRunning(Boolean(data.compressionRunning));
@@ -150,14 +154,19 @@ export default function CompressionTest() {
       }
     }
 
+    const handleBeforeUnload = () => {
+      leaveCompression();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       isMounted = false;
       unsubTelemetry();
       unsubConnection();
+      window.removeEventListener('beforeunload', handleBeforeUnload);
 
-      // NOTE: M30 is turned OFF only by the explicit back-button handler (leaveCompression).
-      // Do NOT call leaveCompression() here — React unmount fires on every
-      // navigation event, which would inadvertently kill M30.
+      // Turn OFF M30 on the PLC when leaving Compression Test screen
+      leaveCompression();
     };
   }, []);
 
@@ -332,9 +341,7 @@ export default function CompressionTest() {
   const displayDistance = isTearActive ? '--' : (telemetry?.compDistance ?? 0);
   const displayForce = isTearActive
     ? '--'
-    : isRunning && dataPoints.length === 0
-    ? 'Reading...'
-    : telemetry?.compForce !== undefined
+    : telemetry?.compForce !== undefined && telemetry?.compForce !== null
     ? Number(telemetry.compForce).toFixed(3)
     : '0.000';
 
