@@ -163,7 +163,7 @@ const AppShell = () => {
   };
 
   const activeMode = getActiveModeInfo();
-  const isRunning = telemetry.processRunning || telemetry.compressionRunning;
+  const isRunning = telemetry.processRunning || telemetry.compressionRunning || telemetry.tcRunning;
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 select-none overflow-x-hidden">
@@ -327,6 +327,9 @@ const AppShell = () => {
                     if (location.pathname === '/compression-test' && window.api?.leaveCompressionMode) {
                       window.api.leaveCompressionMode().catch((err) => console.error('Error leaving Compression Mode (M30):', err));
                     }
+                    if (location.pathname === '/tc-test' && window.api?.leaveTcMode) {
+                      window.api.leaveTcMode().catch((err) => console.error('Error leaving TC Mode (M800):', err));
+                    }
                     navigate('/');
                   }}
                   className="p-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
@@ -363,7 +366,7 @@ const AppShell = () => {
               <div className="flex flex-col bg-slate-50 border border-slate-200 rounded-lg px-3 py-1 min-w-[90px]">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Distance</span>
                 <span className="text-xs font-bold text-slate-800 font-mono">
-                  {telemetry.distance.toFixed(2)} mm
+                  {(telemetry.tcModeActive ? (telemetry.tcDistance ?? 0) : (telemetry.distance ?? 0)).toFixed(2)} mm
                 </span>
               </div>
 
@@ -371,7 +374,7 @@ const AppShell = () => {
               <div className="flex flex-col bg-slate-50 border border-slate-200 rounded-lg px-3 py-1 min-w-[90px]">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Force</span>
                 <span className="text-xs font-bold text-blue-600 font-mono">
-                  {telemetry.force.toFixed(3)} N
+                  {(telemetry.tcModeActive ? (telemetry.tcForce ?? 0) : (telemetry.force ?? 0)).toFixed(3)} N
                 </span>
               </div>
             </div>

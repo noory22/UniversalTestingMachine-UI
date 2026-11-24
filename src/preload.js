@@ -21,6 +21,14 @@ contextBridge.exposeInMainWorld('api', {
   resetCompressionTest: () => ipcRenderer.invoke('compression:reset'),
   tareCompressionTest: () => ipcRenderer.invoke('compression:tare'),
 
+  // TC Test Controls
+  enterTcMode: () => ipcRenderer.invoke('tc:enter'),
+  leaveTcMode: () => ipcRenderer.invoke('tc:leave'),
+  startTcTest: () => ipcRenderer.invoke('tc:start'),
+  stopTcTest: () => ipcRenderer.invoke('tc:stop'),
+  resetTcTest: () => ipcRenderer.invoke('tc:reset'),
+  tareTcTest: () => ipcRenderer.invoke('tc:tare'),
+
   sendSpeed: (value) => ipcRenderer.invoke('utm:send-speed', value),
   sendForceDiff: (value) => ipcRenderer.invoke('utm:send-force-diff', value),
   startProcess: () => ipcRenderer.invoke('utm:start-process'),

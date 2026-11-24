@@ -253,6 +253,15 @@ async function sendTcConfig(config) {
     await modbusClient.writeRegister(406, cycles);
     await delay(30);
 
+    // Turn ON TC Mode Master Coil M800 (2800)
+    tcModeActive = true;
+    try {
+      await modbusClient.writeCoil(COIL_TC_MODE, true);
+      console.log('✅ TC Process Mode (M800) turned ON after writing configuration.');
+    } catch (e) {
+      console.error('Failed to write COIL_TC_MODE (M800):', e.message);
+    }
+
     return {
       success: true,
       message: 'TC configuration successfully written to registers R402-R406.'
@@ -410,6 +419,26 @@ let lastCompDistance = 0;
 let lastCompForce = 0;
 let activeCompCsvStream = null;
 let activeCompCsvPath = null;
+
+// TC (Tension & Compression) Test Coils & Registers
+const COIL_TC_MODE = 2800;          // M800: TC mode master (Fatek offset 2000 + 800)
+const COIL_TC_START = COIL_START;   // M6: TC Start (2006)
+const COIL_TC_RESET = COIL_RESET;   // M7: TC Reset (2007)
+const COIL_TC_STOP = COIL_STOP;     // M8: TC Stop (2008)
+const COIL_TC_TARE = COIL_TARE;     // M41: TC Tare (2041)
+const REG_TC_FORCE = 420;           // R420 (+ R421): Real-time TC Force (32-bit Float LE)
+const REG_TC_DISTANCE = 422;        // R422 (+ R423): Real-time TC Distance (32-bit Float LE)
+const REG_TC_CYCLES = 424;          // R424: Real-time TC Completed/Current Cycle count (16-bit Integer)
+
+let tcModeActive = false;
+let tcRunning = false;
+let tcTareActive = false;
+let tcTareTimer = null;
+let lastTcDistance = 0;
+let lastTcForce = 0;
+let lastTcCycles = 0;
+let activeTcCsvStream = null;
+let activeTcCsvPath = null;
 
 // Synchronized Command Queue (Eliminates half-duplex serial collisions)
 const commandQueue = [];
@@ -658,6 +687,37 @@ async function processModbusLoop() {
         // Real-time Compression Distance: unified with R161
         compDistance = distance;
         lastCompDistance = compDistance;
+      } else if (tcModeActive || tcRunning) {
+        // Read TC Test Telemetry: R420 (Force, 32-bit Float LE), R422 (Distance, 32-bit Float LE), R424 (Cycles, 16-bit Int)
+        try {
+          const respTC = await modbusClient.readHoldingRegisters(REG_TC_FORCE, 5);
+          if (respTC && respTC.data && respTC.data.length >= 5) {
+            // R420 + R421: Force (32-bit Float LE)
+            const bufF = Buffer.alloc(4);
+            bufF.writeUInt16LE(respTC.data[0], 0);
+            bufF.writeUInt16LE(respTC.data[1], 2);
+            const forceVal = bufF.readFloatLE(0);
+            if (!isNaN(forceVal)) {
+              lastTcForce = forceVal;
+            }
+
+            // R422 + R423: Distance (32-bit Float LE)
+            const bufD = Buffer.alloc(4);
+            bufD.writeUInt16LE(respTC.data[2], 0);
+            bufD.writeUInt16LE(respTC.data[3], 2);
+            const distVal = bufD.readFloatLE(0);
+            if (!isNaN(distVal)) {
+              lastTcDistance = distVal;
+            }
+
+            // R424: Completed/Current Cycle count (16-bit Integer)
+            const rawCycles = respTC.data[4];
+            lastTcCycles = rawCycles > 32767 ? rawCycles - 65536 : rawCycles;
+            cycleSuccess = true;
+          }
+        } catch (e) {
+          console.error('[TC Modbus] Read error at registers R420-R424:', e.message);
+        }
       }
 
       // 3d. Settings / Calibration Registers: R100 & R101 (read on slow cycle every ~300ms)
@@ -735,7 +795,20 @@ async function processModbusLoop() {
         compressionModeActive,
         compressionRunning,
         compressionTareActive,
+        tcDistance: lastTcDistance,
+        tcForce: lastTcForce,
+        tcCycles: lastTcCycles,
+        tcModeActive,
+        tcRunning,
+        tcTareActive,
       });
+
+      // Record CSV row if TC test is active and tare is not running
+      if (tcRunning && !tcTareActive && activeTcCsvStream) {
+        const ts = formatTimestamp();
+        const row = `${ts},${lastTcCycles},${lastTcDistance.toFixed(3)},${lastTcForce.toFixed(3)}\n`;
+        activeTcCsvStream.write(row);
+      }
 
       // Record CSV row if compression test is active and tare is not running
       if (compressionRunning && !compressionTareActive && activeCompCsvStream) {
@@ -771,6 +844,9 @@ async function disconnectModbus() {
   compressionModeActive = false;
   compressionRunning = false;
   compressionTareActive = false;
+  tcModeActive = false;
+  tcRunning = false;
+  tcTareActive = false;
   motorUpState = false;
   motorDownState = false;
   homingState = false;
@@ -778,6 +854,12 @@ async function disconnectModbus() {
   lastManualForce = 0.0;
   lastX1 = false;
   commandQueue.length = 0;
+
+  if (tcTareTimer) {
+    clearTimeout(tcTareTimer);
+    tcTareTimer = null;
+  }
+  await stopTcLogging();
 
   if (compressionTareTimer) {
     clearTimeout(compressionTareTimer);
@@ -918,6 +1000,35 @@ async function stopCompressionLogging() {
     console.log(`[CSV] Closed compression log ${activeCompCsvPath}`);
     activeCompCsvStream = null;
     activeCompCsvPath = null;
+  }
+}
+
+// TC test logging helpers
+function startTcLogging() {
+  try {
+    if (!logsDir) initLogsDirectory();
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const filename = `tc_data_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.csv`;
+    activeTcCsvPath = path.join(logsDir, filename);
+
+    activeTcCsvStream = fs.createWriteStream(activeTcCsvPath, { flags: 'w' });
+    activeTcCsvStream.write('Timestamp,Cycle,Distance(mm),Force(N)\n');
+    console.log(`[CSV] Started TC logging to ${activeTcCsvPath}`);
+    return { success: true, filename };
+  } catch (err) {
+    console.error('[CSV] Failed to start TC log file:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+async function stopTcLogging() {
+  if (activeTcCsvStream) {
+    await new Promise((resolve) => activeTcCsvStream.end(resolve));
+    console.log(`[CSV] Closed TC log ${activeTcCsvPath}`);
+    activeTcCsvStream = null;
+    activeTcCsvPath = null;
   }
 }
 
@@ -1532,6 +1643,148 @@ function setupIpcHandlers() {
     });
   });
 
+  // TC Test Handlers (M800 lifecycle matching M20 & M30 Process Modes)
+  ipcMain.handle('tc:enter', async () => {
+    tcModeActive = true;
+    tcRunning = false;
+    tcTareActive = false;
+    lastTcDistance = 0;
+    lastTcForce = 0;
+    lastTcCycles = 0;
+    console.log('✅ TC Mode (M800) activated.');
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC' };
+    }
+    return await safeExecute('tc-enter', async () => {
+      await modbusClient.writeCoil(COIL_TC_MODE, true); // M800 = true
+      await delay(25);
+      return { success: true, m800: true };
+    });
+  });
+
+  ipcMain.handle('tc:leave', async () => {
+    tcModeActive = false;
+    tcRunning = false;
+    tcTareActive = false;
+    lastTcDistance = 0;
+    lastTcForce = 0;
+    lastTcCycles = 0;
+    if (tcTareTimer) {
+      clearTimeout(tcTareTimer);
+      tcTareTimer = null;
+    }
+    await stopTcLogging();
+    console.log('🛑 TC Mode (M800) deactivated.');
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: true, m800: false };
+    }
+    return await safeExecute('tc-leave', async () => {
+      await modbusClient.writeCoil(COIL_TC_MODE, false); // M800 = false
+      await delay(25);
+      return { success: true, m800: false };
+    });
+  });
+
+  ipcMain.handle('tc:start', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    const logResult = startTcLogging();
+    if (!logResult.success) {
+      return { success: false, message: logResult.error };
+    }
+
+    return await safeExecute('tc-start', async () => {
+      await modbusClient.writeCoil(COIL_TC_START, true);  // M6 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_STOP, false);  // M8 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_RESET, false); // M7 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_TARE, false);  // M9 = false
+      await delay(25);
+      tcRunning = true;
+      return { success: true, running: true };
+    });
+  });
+
+  ipcMain.handle('tc:stop', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      tcRunning = false;
+      await stopTcLogging();
+      return { success: true, running: false };
+    }
+    return await safeExecute('tc-stop', async () => {
+      await modbusClient.writeCoil(COIL_TC_STOP, true);   // M8 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_START, false);  // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_RESET, false);  // M7 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_TARE, false);   // M9 = false
+      await delay(25);
+      tcRunning = false;
+      await stopTcLogging();
+      return { success: true, running: false };
+    });
+  });
+
+  ipcMain.handle('tc:reset', async () => {
+    if (tcRunning) {
+      tcRunning = false;
+      await stopTcLogging();
+    }
+    lastTcDistance = 0;
+    lastTcForce = 0;
+    lastTcCycles = 0;
+
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: true, reset: true };
+    }
+    return await safeExecute('tc-reset', async () => {
+      await modbusClient.writeCoil(COIL_TC_RESET, true); // M7 = true
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_START, false); // M6 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_STOP, false);  // M8 = false
+      await delay(25);
+      await modbusClient.writeCoil(COIL_TC_TARE, false);  // M9 = false
+      await delay(25);
+      return { success: true, reset: true };
+    });
+  });
+
+  ipcMain.handle('tc:tare', async () => {
+    if (!isConnected || !modbusClient || !modbusClient.isOpen) {
+      return { success: false, message: 'Not connected to PLC!' };
+    }
+    if (tcTareActive) {
+      return { success: false, message: 'TC tare is already active' };
+    }
+
+    return await safeExecute('tc-tare', async () => {
+      await modbusClient.writeCoil(COIL_TC_TARE, true);  // M9 = true
+      await delay(25);
+      tcTareActive = true;
+
+      if (tcTareTimer) clearTimeout(tcTareTimer);
+      tcTareTimer = setTimeout(async () => {
+        safeExecute('tc-tare-off', async () => {
+          try {
+            if (modbusClient && isConnected && modbusClient.isOpen) {
+              await modbusClient.writeCoil(COIL_TC_TARE, false); // M9 = false
+            }
+          } catch (e) {} finally {
+            tcTareActive = false;
+          }
+          return {};
+        });
+      }, 1000);
+
+      return { success: true, tare: true };
+    });
+  });
+
   // 13. List CSV Logs from Documents/UTM Logs
   ipcMain.handle('logs:list', async () => {
     try {
@@ -1842,8 +2095,8 @@ function setupIpcHandlers() {
 
     // 24. Read PLC Data (for compatibility with CTTM-VD polling pattern)
   ipcMain.handle('read-data', async () => {
-    const currentDistance = compressionModeActive ? lastCompDistance : (processModeM20Active ? lastDistance : lastManualDistance);
-    const currentForce = compressionModeActive ? lastCompForce : lastForce;
+    const currentDistance = tcModeActive ? lastTcDistance : (compressionModeActive ? lastCompDistance : (processModeM20Active ? lastDistance : lastManualDistance));
+    const currentForce = tcModeActive ? lastTcForce : (compressionModeActive ? lastCompForce : lastForce);
 
     return {
       success: true,
